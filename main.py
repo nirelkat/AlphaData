@@ -1,7 +1,7 @@
 """Port of the main MATLAB script.
 
 Runs the statistical analysis (statisticalData) for all five parameters
-(p70, p140, clock, noise, sfdr) and opens three figures per parameter.
+(clock, p70, p140, noise, sfdr) and opens three figures per parameter.
 
 Usage:
     python main.py path/to/measurements.xlsx [--sheet NAME]
@@ -14,7 +14,7 @@ import io
 import matplotlib.pyplot as plt
 import numpy as np
 
-from create_dummy_excel import NORMAL_SPECS, create_dummy_data
+from create_dummy_excel import create_dummy_data, generate_clock
 from load_excel import PARAMETER_COLUMNS, SERIAL_COLUMN, load_excel
 from statistical_data import statistical_data
 
@@ -22,8 +22,8 @@ from statistical_data import statistical_data
 # FIX: this debug line overwrote the real clock measurements with synthetic
 # noise, so every result was computed on fake data. It is removed; set this
 # flag to True only to reproduce that test behaviour.
-# The original used N(70, 1); reference_data.xlsx shows clock is ~3-8, so the
-# synthetic clock now uses the realistic spec from create_dummy_excel.py.
+# The original used N(70, 1); the synthetic clock now uses the realistic spec
+# from create_dummy_excel.py: normal(13.0, 0.9) within 11-15, 2 decimal places.
 USE_SYNTHETIC_CLOCK = False
 
 # Number of synthetic samples used when USE_SYNTHETIC_CLOCK is True and no
@@ -71,7 +71,7 @@ def main():
     # Optional on the command line so synthetic mode can run without a file;
     # it is still required (checked below) when USE_SYNTHETIC_CLOCK is False.
     parser.add_argument("excel_file", nargs="?",
-                        help="Excel file with columns serial, p70, p140, clock, noise, sfdr")
+                        help="Excel file with columns serial, clock, p70, p140, noise, sfdr")
     parser.add_argument("--sheet", default=0, help="Sheet name or index (default: first sheet)")
     args = parser.parse_args()
 
@@ -89,9 +89,8 @@ def main():
 
     if USE_SYNTHETIC_CLOCK:
         # MATLAB: test.p1 = 70 + randn(size(test.p1));   (p1 was named "clock")
-        mean, std = NORMAL_SPECS["clock"]
-        test["clock"] = mean + std * np.random.randn(len(test))
-        # MATLAB: % test.p1(4) = 77;   ->   test.loc[3, "clock"] = 15
+        test["clock"] = generate_clock(np.random.default_rng(), len(test))
+        # MATLAB: % test.p1(4) = 77;   ->   test.loc[3, "clock"] = 20
 
     serials = test[SERIAL_COLUMN].to_numpy(dtype=str)
 

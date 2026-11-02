@@ -15,25 +15,28 @@ parameter's distribution.
 
 ## Parameters
 
-| Column   | Typical values (from `reference_data.xlsx`) | Notes |
-|----------|---------------------------------------------|-------|
-| `serial` | `256`, `201`, `020`, …                      | Kept as text so leading zeros survive |
-| `p70`    | −20.0 … −19.1 (mean −19.63)                  | 2 decimal places |
-| `p140`   | −20.2 … −19.2 (mean −19.66)                  | 2 decimal places |
-| `clock`  | 3.2 … 7.6 (mean 6.0)                         | 2 decimal places |
-| `noise`  | −105 … −104                                  | Whole numbers, very low spread |
-| `sfdr`   | 54.2 … 58.2 (mean 56.2)                      | 2 decimal places |
+Columns in table order:
+
+| Column   | Typical values                    | Notes |
+|----------|-----------------------------------|-------|
+| `serial` | `256`, `201`, `020`, …            | Header may also be `SN`. Kept as text so leading zeros survive |
+| `clock`  | 11 … 15 (mean ≈ 13.0, std ≈ 0.9)  | 2 decimal places |
+| `p70`    | −20.0 … −19.1 (mean −19.63)       | 2 decimal places |
+| `p140`   | −20.2 … −19.2 (mean −19.66)       | 2 decimal places |
+| `noise`  | −105 … −104                       | Whole numbers, very low spread |
+| `sfdr`   | 54.2 … 58.2 (mean 56.2)           | 2 decimal places |
 
 `reference_data.xlsx` is a small sample of real measurements, kept in the
-repository as a baseline reference.
+repository as a baseline reference. Its columns are in the order above. Its
+`clock` values (3.2 … 7.6) predate the 11 … 15 range and were left unchanged.
 
 ## Input format
 
-The layout follows `reference_data.xlsx`: a header row containing `serial`, `p70`,
-`p140`, `clock`, `noise`, `sfdr`, followed by one row per product.
+The layout follows `reference_data.xlsx`: a header row containing `serial`, `clock`,
+`p70`, `p140`, `noise`, `sfdr`, followed by one row per product.
 
 - **Table position:** the table may start anywhere on the sheet (the reference
-  starts at cell B3). The loader finds it by the `serial` header cell.
+  starts at cell B3). The loader finds it by the `serial` (or `SN`) header cell.
 - **Columns:** matched by header name (case-insensitive), so their order does not
   matter.
 - **Bad cells:** blank or text cells in parameter columns become NaN and are
@@ -53,25 +56,25 @@ Optional `--sheet NAME` selects a worksheet (default: the first).
 
 ### Viewing the results
 
-All five parameters are analysed in one run, in the order `p70`, `p140`, `clock`,
+All five parameters are analysed in one run, in the order `clock`, `p70`, `p140`,
 `noise`, `sfdr`.
 
 **Console:** one block per parameter, then a summary table:
 
 ```
 --- clock ---
-average  = 6.1993
-Median   = 5.9300
-WM       = 5.8146
-sigma    = 1.8782
-APD      = 1.4550
+average  = 12.9210
+Median   = 12.8200
+WM       = 12.7701
+sigma    = 1.1537
+APD      = 0.8348
 h0       = 0   (1 = normality rejected at alpha = 0.05)
-p_normal = 0.5459
+p_normal = 0.5021
 outliers = 1  (serials: 361)
 
 === Summary ===
 parameter       mean    median        WM    sigma      APD   h0  p_normal  outliers
-p70          -19.687   -19.690   -19.678    0.224    0.268    0     0.674         0
+clock         12.921    12.820    12.770    1.154    0.835    0     0.502         1
 ...
 ```
 
@@ -121,14 +124,16 @@ curve.
 ## Sample data for testing
 
 `create_dummy_excel.py` generates a reproducible test file, `sample_measurements.xlsx`,
-with the same layout as `reference_data.xlsx` (table at B3). It has 60 rows. The
-distributions are modelled on the reference data:
-- **`p70`, `p140`, `clock`, `sfdr`:** normal distributions, rounded to 2 decimal
-  places;
+with the same layout as `reference_data.xlsx` (table at B3, columns `serial`,
+`clock`, `p70`, `p140`, `noise`, `sfdr`). It has 60 rows. The distributions are:
+- **`clock`:** normal with mean 13.0 and std 0.9, kept between 11 and 15 (values
+  outside are redrawn), rounded to 2 decimal places;
+- **`p70`, `p140`, `sfdr`:** normal distributions modelled on the reference data,
+  rounded to 2 decimal places;
 - **`noise`:** whole numbers, mostly −104, some −105, and occasionally −103.
 
 It also includes these edge cases:
-- an outlier in `clock` (row 4, value 15.00);
+- an outlier in `clock` (row 4, value 20.00, outside the 11–15 range);
 - blank cells in `clock` and `p140`;
 - a text entry (`N/A`) in `p70`;
 - serials with leading zeros (e.g. `020`).
@@ -147,7 +152,8 @@ Options: `python create_dummy_excel.py my_file.xlsx --rows 100 --seed 7`.
 
 Setting `USE_SYNTHETIC_CLOCK = True` in `main.py` replaces `clock` with random data,
 like the original MATLAB test line. The original MATLAB line used N(70, 1); this
-mode now uses N(6.0, 1.5) to match the real clock scale.
+mode uses the same `clock` generator as `create_dummy_excel.py`: mean 13.0, std
+0.9, kept between 11 and 15, rounded to 2 decimal places.
 
 In this mode the Excel file is optional:
 - **No file:** `python main.py` runs on 60 generated samples for all five
