@@ -10,7 +10,9 @@ little weight.
 import numpy as np
 
 # MATLAB: weights(weights == Inf) = 200;
-# Maximum weight a single neighbouring pair may receive.
+# Weight given to a pair of identical values (gap 0). Measurements are rounded
+# to 2 decimal places, so the largest weight of a non-zero gap is 1/0.01 = 100;
+# 200 is deliberately above that.
 MAX_WEIGHT = 200.0
 
 
@@ -37,13 +39,12 @@ def weighted_mean(x):
         weights = 1.0 / gaps
 
     # MATLAB: weights(weights == Inf) = 200;
-    # FIX: the original only replaced *infinite* weights (identical values) with
-    # 200, so a pair 0.001 apart got weight 1000 while two identical values got
-    # only 200. A tie was weighted less than a near-tie. Capping every weight at
-    # 200 gives the intended "identical values get the maximum weight" behaviour.
-    # (For data whose resolution is coarser than 1/200 = 0.005 the result is
-    # identical to the original.)
-    weights = np.minimum(weights, MAX_WEIGHT)
+    # Identical neighbouring values (gap 0) give 1/0 = Inf; only those weights
+    # are replaced with 200, exactly as in the original. This is intentional:
+    # all measurements are rounded to 2 decimal places (0.01 resolution), so any
+    # non-zero gap is >= 0.01 and its weight 1/gap is <= 100. A weight of 200
+    # therefore always ranks identical values above every distinct pair.
+    weights[np.isinf(weights)] = MAX_WEIGHT
 
     # MATLAB: WM = sum(pairWiseMean.*weights)/sum(weights);
     return float(np.sum(pair_wise_mean * weights) / np.sum(weights))

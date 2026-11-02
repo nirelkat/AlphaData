@@ -16,6 +16,18 @@ classic and robust statistics for a parameter and plots its distribution.
 First row = headers (any text). Column A = serial number, columns B–F = parameters
 p1…p5. Blank or text cells in parameter columns are treated as NaN and ignored.
 
+## Weighted Mean (WM)
+
+WM sorts the values and averages the midpoints of neighbouring pairs, weighting
+each midpoint by `1 / gap`. A gap of 0 (identical values) would give an infinite
+weight, so those weights are set to **200**, matching the original MATLAB code.
+
+This is intentional and relies on the data's precision: all measurements are
+rounded to **2 decimal places** (0.01 resolution). Any non-zero gap is therefore
+at least 0.01, giving a weight of at most 100, so identical values (200) always
+carry the highest weight. If the data are ever stored with finer precision, gaps
+below 0.005 would get weights above 200 and this value should be revisited.
+
 ## Install & run
 
 ```bash
