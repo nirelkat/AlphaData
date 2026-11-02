@@ -2,11 +2,14 @@
 
 Usage:
     python main.py path/to/measurements.xlsx [--sheet NAME]
+    python main.py                 # only when USE_SYNTHETIC_CLOCK = True
 """
 
 import argparse
 
 import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
 
 from load_excel import load_excel
 from statistical_data import statistical_data
@@ -16,6 +19,10 @@ from statistical_data import statistical_data
 # N(70, 1) noise, so every result was computed on fake data. It is removed;
 # set this flag to True only to reproduce that test behaviour.
 USE_SYNTHETIC_CLOCK = False
+
+# Number of synthetic samples used when USE_SYNTHETIC_CLOCK is True and no
+# Excel file is given (there is no file to take size(test.p1) from).
+SYNTHETIC_SAMPLE_COUNT = 60
 
 
 def print_results(name, average, median, wm, sigma, apd, h0, p_normal):
@@ -34,7 +41,10 @@ def print_results(name, average, median, wm, sigma, apd, h0, p_normal):
 
 def main():
     parser = argparse.ArgumentParser(description="Statistical analysis of product parameters.")
-    parser.add_argument("excel_file", help="Excel file: serial number + 5 parameter columns")
+    # Optional on the command line so synthetic mode can run without a file;
+    # it is still required (checked below) when USE_SYNTHETIC_CLOCK is False.
+    parser.add_argument("excel_file", nargs="?",
+                        help="Excel file: serial number + 5 parameter columns")
     parser.add_argument("--sheet", default=0, help="Sheet name or index (default: first sheet)")
     args = parser.parse_args()
 
@@ -42,10 +52,20 @@ def main():
     plt.close("all")
 
     # MATLAB: loadExcel
-    test = load_excel(args.excel_file, sheet_name=args.sheet)
+    if args.excel_file is not None:
+        test = load_excel(args.excel_file, sheet_name=args.sheet)
+    elif USE_SYNTHETIC_CLOCK:
+        # No file given: build an empty table of SYNTHETIC_SAMPLE_COUNT rows;
+        # p1 is filled with synthetic data below, p2-p5 stay NaN.
+        print(f"No Excel file given - using {SYNTHETIC_SAMPLE_COUNT} synthetic clock samples.")
+        test = pd.DataFrame(np.nan, index=range(SYNTHETIC_SAMPLE_COUNT),
+                            columns=["p1", "p2", "p3", "p4", "p5"])
+        test.insert(0, "serial", [f"SYN{i + 1:04d}" for i in range(SYNTHETIC_SAMPLE_COUNT)])
+    else:
+        parser.error("excel_file is required unless USE_SYNTHETIC_CLOCK = True")
 
     if USE_SYNTHETIC_CLOCK:
-        import numpy as np
+        # MATLAB: test.p1 = 70 + randn(size(test.p1));
         test["p1"] = 70 + np.random.randn(len(test))
         # test.loc[3, "p1"] = 77   # MATLAB: % test.p1(4) = 77;
 

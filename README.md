@@ -42,5 +42,31 @@ Optional `--sheet NAME` selects a worksheet (default: the first). The statistics
 printed to the console and three figures open (scatter with outliers, histogram,
 empirical vs. normal CDF).
 
+### Sample data for testing
+
+`create_dummy_excel.py` generates a reproducible test file, `sample_measurements.xlsx`.
+It has 60 rows with columns `SN`, `p1`–`p5`, all values rounded to 2 decimal places. It
+also includes these edge cases:
+- an outlier in `p1` (row 4, value 77.00);
+- blank cells in `p1` and `p3`;
+- a text entry (`N/A`) in `p2`.
+
+```bash
+python create_dummy_excel.py
+```
+
+```bash
+python main.py sample_measurements.xlsx
+```
+
+Options: `python create_dummy_excel.py my_file.xlsx --rows 100 --seed 7`.
+
+### Synthetic mode (no Excel file)
+
+Setting `USE_SYNTHETIC_CLOCK = True` in `main.py` replaces `p1` with random
+N(70, 1) data, like the original MATLAB test line. In this mode the Excel file is
+optional: `python main.py` alone runs on 60 synthetic samples. If a file is given,
+it is loaded and only its `p1` column is replaced.
+
 To analyse `p2` (`p70`) as well, uncomment the corresponding line in `main.py`,
 as in the original script.
