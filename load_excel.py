@@ -9,7 +9,7 @@ Expected sheet layout (as in ``reference_data.xlsx``):
 
     |        |  B     |  C    |  D    |  E    |  F    |  G   |
     |   3    | serial | clock | p70   | p140  | noise | sfdr |
-    |   4... | 256    | 7.52  | -19.6 | ...   |       |      |
+    |   4... | 256    | 15.01 | -19.6 | ...   |       |      |
 
 * The table may start anywhere on the sheet (the reference starts at B3).
   The header row is found by looking for the ``serial`` (or ``SN``) cell.

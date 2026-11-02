@@ -27,8 +27,8 @@ Columns in table order:
 | `sfdr`   | 54.2 … 58.2 (mean 56.2)           | 2 decimal places |
 
 `reference_data.xlsx` is a small sample of real measurements, kept in the
-repository as a baseline reference. Its columns are in the order above. Its
-`clock` values (3.2 … 7.6) predate the 11 … 15 range and were left unchanged.
+repository as a baseline reference. Its columns are in the order above, and its
+`clock` values (11.8 … 15.01) follow the 11 … 15 range.
 
 ## Input format
 
