@@ -23,6 +23,9 @@ OUTLIER_FACTOR = 3  # MATLAB: x > WM+3*APD | x < WM-3*APD
 def statistical_data(x, parameter_name):
     """Python equivalent of
     ``[average, Median, WM, sigma, APD, h0, p_normal] = statisticalData(x, parameterName)``
+
+    An 8th output, ``outliers`` (boolean mask, MATLAB variable ``I``), is also
+    returned so the caller can report which samples were flagged.
     """
     x = np.asarray(x, dtype=float).ravel()
     valid = x[~np.isnan(x)]
@@ -44,10 +47,28 @@ def statistical_data(x, parameter_name):
     # MATLAB: APD = AbsolutePairwiseDifference(x);
     apd = absolute_pairwise_difference(x)
 
+    # FIX: scale used for the outlier band, the KS test and the CDF curve.
+    # APD is 0 when more than half of the values are identical - e.g. "noise",
+    # which is measured in whole numbers and is mostly -104. The original then
+    # had a zero-width band (every value != WM flagged as an outlier) and
+    # divided by zero in kstest. In that case sigma is used instead of APD.
+    if np.isfinite(apd) and apd > 0:
+        scale, scale_name = apd, "APD"
+    else:
+        scale, scale_name = sigma, "sigma"
+        warnings.warn(
+            f"APD of '{parameter_name}' is {apd} (too many identical values); "
+            f"using sigma = {sigma:.4g} for outliers and the normality test."
+        )
+    scale_ok = np.isfinite(scale) and scale > 0
+
     # MATLAB: I = (x > WM+3*APD) | (x < WM-3*APD);
     # (NaN comparisons are False, as in MATLAB.)
-    with np.errstate(invalid="ignore"):
-        outliers = (x > wm + OUTLIER_FACTOR * apd) | (x < wm - OUTLIER_FACTOR * apd)
+    if scale_ok:
+        with np.errstate(invalid="ignore"):
+            outliers = (x > wm + OUTLIER_FACTOR * scale) | (x < wm - OUTLIER_FACTOR * scale)
+    else:
+        outliers = np.zeros(x.shape, dtype=bool)  # all values identical
 
     # MATLAB: range = 1:length(x);
     # (renamed: "range" shadowed a MATLAB built-in; MATLAB indices are 1-based)
@@ -56,6 +77,7 @@ def statistical_data(x, parameter_name):
     # ---- Figure 1: data vs. sample index ------------------------------------
     # MATLAB: figure; hold on
     fig1, ax1 = plt.subplots()
+    _window_title(fig1, f"{parameter_name} - data vs. sample")
     # MATLAB: plot(x, '.b', 'MarkerSize', 15)
     ax1.plot(sample_index, x, ".b", markersize=15, label="data")
     # MATLAB: plot(range(I), x(I), '.r', 'MarkerSize', 15)
@@ -78,6 +100,7 @@ def statistical_data(x, parameter_name):
     # ---- Figure 2: histogram ------------------------------------------------
     # MATLAB: figure; histogram(x, 'BinWidth',0.5); title(parameterName)
     fig2, ax2 = plt.subplots()
+    _window_title(fig2, f"{parameter_name} - histogram")
     ax2.hist(valid, bins=_bin_edges(valid, HISTOGRAM_BIN_WIDTH), edgecolor="black")
     ax2.set_title(parameter_name)
 
@@ -87,21 +110,18 @@ def statistical_data(x, parameter_name):
     # h0 = 1 means "reject normality".
     # Note: WM and APD are estimated from the same data, so the p-value is
     # optimistic (Lilliefors effect). This matches the original behaviour.
-    scale_ok = np.isfinite(apd) and apd > 0
+    # For whole-number data such as "noise" the test is expected to reject
+    # normality: a staircase of a few values cannot match a smooth curve.
     if scale_ok:
-        p_normal = float(stats.kstest((valid - wm) / apd, "norm").pvalue)
+        p_normal = float(stats.kstest((valid - wm) / scale, "norm").pvalue)
         h0 = int(p_normal < 0.05)
     else:
-        # FIX: if APD == 0 (e.g. more than half the values identical) the
-        # original divided by zero and kstest received Inf/NaN.
-        warnings.warn(
-            f"APD of '{parameter_name}' is {apd}; skipping the KS normality test."
-        )
-        h0, p_normal = np.nan, np.nan
+        h0, p_normal = np.nan, np.nan  # no spread at all: test is undefined
 
     # ---- Figure 3: empirical CDF vs. normal CDF ------------------------------
     # MATLAB: figure; cdfplot(x); hold on
     fig3, ax3 = plt.subplots()
+    _window_title(fig3, f"{parameter_name} - CDF")
     sorted_x = np.sort(valid)
     ecdf_y = np.arange(1, sorted_x.size + 1) / sorted_x.size
     # Prepend (min, 0) so the staircase rises from 0 like MATLAB's cdfplot.
@@ -115,15 +135,22 @@ def statistical_data(x, parameter_name):
         # FIX (label only): the curve is the normal CDF with mean WM and
         # std APD, i.e. the standard normal applied to standardised data;
         # the label now says so instead of "Standard Normal CDF".
-        ax3.plot(x_values, stats.norm.cdf((x_values - wm) / apd, 0, 1), "r-",
-                 label="Normal CDF (mean = WM, std = APD)")
+        ax3.plot(x_values, stats.norm.cdf((x_values - wm) / scale, 0, 1), "r-",
+                 label=f"Normal CDF (mean = WM, std = {scale_name})")
     # MATLAB: legend(...,'Location','best'); title(parameterName)
     ax3.legend(loc="best")
     ax3.set_title(parameter_name)
     ax3.set_xlabel("x")
     ax3.set_ylabel("F(x)")
 
-    return average, median, wm, sigma, apd, h0, p_normal
+    return average, median, wm, sigma, apd, h0, p_normal, outliers
+
+
+def _window_title(fig, title):
+    """Name the figure window (15 windows are open when all parameters run)."""
+    manager = getattr(fig.canvas, "manager", None)
+    if manager is not None:
+        manager.set_window_title(title)
 
 
 def _num2str(value):

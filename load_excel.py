@@ -1,47 +1,68 @@
 """Replacement for the missing ``loadExcel.m`` script.
 
-The original ``loadExcel`` was not supplied. From the way the main script uses
-it, it must have created a struct called ``test`` with (at least) the numeric
-fields ``test.p1`` ... ``test.p5`` - one column vector per parameter.
+The original ``loadExcel`` was not supplied. The main script used it to create
+a struct ``test`` holding one numeric column per parameter. This module returns
+the equivalent pandas DataFrame, so ``test["clock"]`` in Python plays the role
+of ``test.clock`` in MATLAB.
 
-This module reproduces that contract: it reads an Excel sheet laid out as
+Expected sheet layout (as in ``reference_data.xlsx``):
 
-    | serial number | param 1 | param 2 | param 3 | param 4 | param 5 |
+    |        |  B     |  C   |  D   |  E    |  F    |  G   |
+    |   3    | serial | p70  | p140 | clock | noise | sfdr |
+    |   4... | 256    | -19.6| ...  |       |       |      |
 
-and returns a pandas DataFrame with the columns ``serial, p1, p2, p3, p4, p5``
-so that ``test["p1"]`` in Python plays the role of ``test.p1`` in MATLAB.
-
-Assumptions (adjust if your original loadExcel differed):
-  * The first row of the sheet is a header row.
-  * Column 1 is the serial number; columns 2-6 are the five parameters.
-  * Non-numeric parameter cells (blank, text, "N/A", ...) become NaN, which is
-    what MATLAB's readtable/xlsread produce and what the statistics functions
-    are written to ignore ("omitnan").
+* The table may start anywhere on the sheet (the reference starts at B3).
+  The header row is found by looking for the ``serial`` cell.
+* Columns are matched by header name (case-insensitive), not by position.
+* Serial numbers are kept as text so leading zeros (e.g. ``020``) survive.
+* Non-numeric parameter cells (blank, text, "N/A", ...) become NaN, which is
+  what MATLAB's readtable produces and what the statistics functions are
+  written to ignore ("omitnan").
 """
 
 import pandas as pd
 
-PARAMETER_COLUMNS = ["p1", "p2", "p3", "p4", "p5"]
+SERIAL_COLUMN = "serial"
+# Parameter names in the order they appear in reference_data.xlsx.
+PARAMETER_COLUMNS = ["p70", "p140", "clock", "noise", "sfdr"]
 
 
 def load_excel(path, sheet_name=0):
     """Read the measurement sheet and return a DataFrame (MATLAB: ``test``)."""
-    raw = pd.read_excel(path, sheet_name=sheet_name)
+    raw = pd.read_excel(path, sheet_name=sheet_name, header=None, dtype=object)
 
-    if raw.shape[1] < 1 + len(PARAMETER_COLUMNS):
+    # Locate the header row/column: the cell whose text is "serial".
+    is_serial = raw.map(lambda v: isinstance(v, str) and v.strip().lower() == SERIAL_COLUMN)
+    hits = is_serial.stack()
+    hits = hits[hits]
+    if hits.empty:
+        raise ValueError(f"No '{SERIAL_COLUMN}' header cell found in '{path}'.")
+    header_row, first_col = hits.index[0]
+
+    # Header names -> column positions, from the "serial" cell to the right.
+    headers = {}
+    for col in raw.columns[raw.columns.get_loc(first_col):]:
+        name = raw.at[header_row, col]
+        if isinstance(name, str) and name.strip():
+            headers.setdefault(name.strip().lower(), col)
+
+    missing = [name for name in PARAMETER_COLUMNS if name not in headers]
+    if missing:
         raise ValueError(
-            f"Expected at least {1 + len(PARAMETER_COLUMNS)} columns "
-            f"(serial number + 5 parameters) in '{path}', found {raw.shape[1]}."
+            f"Missing parameter column(s) {missing} in '{path}'. "
+            f"Expected headers: {[SERIAL_COLUMN] + PARAMETER_COLUMNS}."
         )
 
-    # Select columns by position so the header text in the sheet does not matter.
-    test = raw.iloc[:, : 1 + len(PARAMETER_COLUMNS)].copy()
-    test.columns = ["serial"] + PARAMETER_COLUMNS
+    body = raw.iloc[raw.index.get_loc(header_row) + 1:]
+    test = pd.DataFrame({SERIAL_COLUMN: body[headers[SERIAL_COLUMN]]})
+    for name in PARAMETER_COLUMNS:
+        # Numeric parameters; anything unparsable becomes NaN (MATLAB behaviour).
+        test[name] = pd.to_numeric(body[headers[name]], errors="coerce")
 
-    # Numeric parameters; anything unparsable becomes NaN (MATLAB behaviour).
-    for col in PARAMETER_COLUMNS:
-        test[col] = pd.to_numeric(test[col], errors="coerce")
-
-    # Drop rows that are completely empty (trailing blank rows in Excel).
+    # Drop completely empty rows (blank rows below the table).
     test = test.dropna(how="all").reset_index(drop=True)
+    # Serial numbers as text: 256 -> "256", "020" stays "020".
+    test[SERIAL_COLUMN] = test[SERIAL_COLUMN].map(
+        lambda v: "" if pd.isna(v) else str(int(v)) if isinstance(v, float) and v.is_integer() else str(v)
+    )
     return test

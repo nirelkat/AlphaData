@@ -5,15 +5,25 @@ Usage:
 
 Default output: sample_measurements.xlsx (60 rows, seed 42 - reproducible).
 
-Layout (what load_excel expects):
-    | SN | p1 | p2 | p3 | p4 | p5 |
+The layout copies reference_data.xlsx: the table starts at cell B3 with the
+headers  serial | p70 | p140 | clock | noise | sfdr.
+
+Distributions are modelled on the 6 rows of reference_data.xlsx:
+
+    parameter  ref. mean  ref. std  ref. range         generated as
+    p70        -19.63     0.30      -20.01 .. -19.14   normal(-19.63, 0.30), 2 dp
+    p140       -19.66     0.39      -20.23 .. -19.21   normal(-19.66, 0.39), 2 dp
+    clock        6.01     1.70        3.20 .. 7.60     normal(6.00, 1.50),   2 dp
+    noise     -104.33     0.52      -105   .. -104     whole numbers, mostly -104
+    sfdr        56.23     1.68       54.20 .. 58.20    normal(56.20, 1.60),  2 dp
 
 Built-in edge cases:
-  * Every numeric value is rounded to 2 decimal places, like the real data,
-    so some neighbouring values are identical (gap 0 -> WeightedMean weight 200).
-  * Blank cells in p1 and p3 (read as NaN and ignored by the statistics).
-  * A text entry ("N/A") in p2 (converted to NaN by load_excel).
-  * An intentional outlier in p1 (77.00, about 7 sigma above the 70 mean).
+  * Values are rounded to 2 decimal places (noise to whole numbers), like the
+    real data, so identical neighbouring values occur (WeightedMean weight 200).
+  * Blank cells in clock and p140 (read as NaN and ignored by the statistics).
+  * A text entry ("N/A") in p70 (converted to NaN by load_excel).
+  * An intentional outlier in clock (15.00, about 6 sigma above the mean).
+  * Serial numbers are 3-digit text with leading zeros, like "020".
 """
 
 import argparse
@@ -23,20 +33,27 @@ import pandas as pd
 
 DEFAULT_OUTPUT = "sample_measurements.xlsx"
 
-# Typical value (mean, std) for each parameter.
-# p1 is the clock (~70, std 1), matching the MATLAB synthetic test data.
-PARAMETER_SPECS = {
-    "p1": (70.0, 1.0),
-    "p2": (70.0, 0.5),
-    "p3": (3.30, 0.05),
-    "p4": (25.0, 2.0),
-    "p5": (1.20, 0.10),
+# Same position as the table in reference_data.xlsx (cell B3; 0-based offsets).
+START_ROW, START_COL = 2, 1
+
+# Continuous parameters: (mean, std), rounded to 2 decimal places.
+NORMAL_SPECS = {
+    "p70": (-19.63, 0.30),
+    "p140": (-19.66, 0.39),
+    "clock": (6.00, 1.50),
+    "sfdr": (56.20, 1.60),
 }
 
+# noise: whole numbers with very low spread (reference: four -104, two -105).
+NOISE_VALUES = [-105, -104, -103]
+NOISE_PROBABILITIES = [0.30, 0.65, 0.05]
+
+COLUMN_ORDER = ["serial", "p70", "p140", "clock", "noise", "sfdr"]
+
 # Edge cases, as 0-based row positions.
-OUTLIER_ROW, OUTLIER_VALUE = 3, 77.00  # MATLAB test case: test.p1(4) = 77
-BLANK_CELLS = [(10, "p1"), (25, "p3")]
-TEXT_CELLS = [(12, "p2", "N/A")]
+OUTLIER_ROW, OUTLIER_COLUMN, OUTLIER_VALUE = 3, "clock", 15.00
+BLANK_CELLS = [(10, "clock"), (25, "p140")]
+TEXT_CELLS = [(12, "p70", "N/A")]
 
 
 def create_dummy_data(rows=60, seed=42):
@@ -44,16 +61,21 @@ def create_dummy_data(rows=60, seed=42):
     edge_rows = [OUTLIER_ROW] + [r for r, _ in BLANK_CELLS] + [r for r, _, _ in TEXT_CELLS]
     if rows <= max(edge_rows):
         raise ValueError(f"rows must be greater than {max(edge_rows)} to fit the edge cases.")
+    if rows > 999:
+        raise ValueError("rows must be at most 999 (3-digit serial numbers).")
 
     rng = np.random.default_rng(seed)
-    data = {"SN": [f"SN{i + 1:04d}" for i in range(rows)]}
-    for name, (mean, std) in PARAMETER_SPECS.items():
-        # Round to 2 decimal places (0.01 resolution, like the real data).
+    data = {
+        # Unique 3-digit serials as text, e.g. "020" (leading zeros kept).
+        "serial": [f"{n:03d}" for n in rng.choice(np.arange(1, 1000), rows, replace=False)],
+    }
+    for name, (mean, std) in NORMAL_SPECS.items():
         # Columns are stored as object so text and blanks can be inserted.
         data[name] = np.round(rng.normal(mean, std, rows), 2).astype(object)
-    df = pd.DataFrame(data)
+    data["noise"] = rng.choice(NOISE_VALUES, rows, p=NOISE_PROBABILITIES).astype(object)
 
-    df.loc[OUTLIER_ROW, "p1"] = OUTLIER_VALUE
+    df = pd.DataFrame(data)[COLUMN_ORDER]
+    df.loc[OUTLIER_ROW, OUTLIER_COLUMN] = OUTLIER_VALUE
     for row, col in BLANK_CELLS:
         df.loc[row, col] = None
     for row, col, text in TEXT_CELLS:
@@ -70,14 +92,15 @@ def main():
     args = parser.parse_args()
 
     df = create_dummy_data(args.rows, args.seed)
-    df.to_excel(args.output, index=False)
+    df.to_excel(args.output, index=False, startrow=START_ROW, startcol=START_COL)
 
-    print(f"Wrote {len(df)} rows to {args.output}")
-    print(f"  outlier : row {OUTLIER_ROW + 1} (SN{OUTLIER_ROW + 1:04d}) p1 = {OUTLIER_VALUE}")
+    print(f"Wrote {len(df)} rows to {args.output} (table starts at cell B3)")
+    print(f"  outlier : row {OUTLIER_ROW + 1} (serial {df.at[OUTLIER_ROW, 'serial']}) "
+          f"{OUTLIER_COLUMN} = {OUTLIER_VALUE}")
     for row, col in BLANK_CELLS:
-        print(f"  blank   : row {row + 1} (SN{row + 1:04d}) {col}")
+        print(f"  blank   : row {row + 1} (serial {df.at[row, 'serial']}) {col}")
     for row, col, text in TEXT_CELLS:
-        print(f"  text    : row {row + 1} (SN{row + 1:04d}) {col} = '{text}'")
+        print(f"  text    : row {row + 1} (serial {df.at[row, 'serial']}) {col} = '{text}'")
 
 
 if __name__ == "__main__":
