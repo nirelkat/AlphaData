@@ -1,10 +1,13 @@
 """Statistical analysis of product parameters (port of the main MATLAB script).
 
-Loads the measurement sheet, analyses every parameter and opens one dashboard
-window per parameter plus a final executive summary window:
+Loads the measurement sheet, analyses every parameter and opens ONE window
+with a page per parameter plus an executive summary page, in this order:
 
     continuous parameters first (clock, p70, p140, sfdr - in sheet order),
     then discrete ones (noise), then the summary.
+
+Switch pages with the navigation bar at the bottom of the window (or the
+Left/Right arrow keys); Save PNG / Save PDF export the visible page.
 
 Usage:
     python main.py measurements.xlsx
@@ -17,8 +20,8 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 
-from dashboards import (add_export_buttons, continuous_dashboard, discrete_dashboard,
-                        save_figure, summary_dashboard)
+from dashboards import (DashboardViewer, Page, continuous_dashboard, discrete_dashboard,
+                        export_pages, summary_dashboard)
 from load_excel import PARAMETER_COLUMNS, SERIAL_COLUMN, load_excel
 from statistical_data import analyse
 
@@ -74,7 +77,7 @@ def _outlier_text(mask, serials):
 
 
 def build_pages(test, results, source):
-    """Create the dashboard figures in display order; returns [(slug, fig)]."""
+    """Pages in display order: continuous parameters, discrete ones, summary."""
     continuous = [n for n in PARAMETER_COLUMNS if n in results and results[n].kind == "continuous"]
     discrete = [n for n in PARAMETER_COLUMNS if n in results and results[n].kind == "discrete"]
     order = continuous + discrete
@@ -82,37 +85,20 @@ def build_pages(test, results, source):
     serials = test[SERIAL_COLUMN].to_numpy(dtype=str)
 
     pages = []
-    for page, name in enumerate(order, start=1):
+    for number, name in enumerate(order, start=1):
         builder = continuous_dashboard if name in continuous else discrete_dashboard
-        fig = builder(test[name].to_numpy(dtype=float), serials, results[name],
-                      f"{page}/{total}", source)
-        pages.append((f"{page:02d}_{name}", fig))
-    summary = summary_dashboard(test, results, order, f"{total}/{total}", source)
-    pages.append((f"{total:02d}_summary", summary))
+        values = test[name].to_numpy(dtype=float)
+
+        def draw(fig, builder=builder, values=values, name=name, number=number):
+            builder(fig, values, serials, results[name], f"{number}/{total}", source)
+
+        pages.append(Page(f"{number:02d}_{name}", name, draw))
+
+    def draw_summary(fig):
+        summary_dashboard(fig, test, results, order, f"{total}/{total}", source)
+
+    pages.append(Page(f"{total:02d}_summary", "Summary", draw_summary))
     return order, pages
-
-
-def export_pages(pages, export_dir, fmt, stem):
-    """Save every page; for PDF also one combined multi-page report."""
-    from matplotlib.backends.backend_pdf import PdfPages
-
-    export_dir = Path(export_dir)
-    formats = ["png", "pdf"] if fmt == "both" else [fmt]
-    for slug, fig in pages:
-        for ext in formats:
-            print(f"Saved {save_figure(fig, export_dir / f'{stem}_{slug}.{ext}')}")
-    if "pdf" in formats:
-        report = export_dir / f"{stem}_report.pdf"
-        with PdfPages(report) as pdf:
-            for _slug, fig in pages:
-                hidden = [b.ax for b in getattr(fig, "_export_buttons", [])]
-                hidden += [getattr(fig, "_export_status")] if hasattr(fig, "_export_status") else []
-                for artist in hidden:
-                    artist.set_visible(False)
-                pdf.savefig(fig, facecolor=fig.get_facecolor())
-                for artist in hidden:
-                    artist.set_visible(True)
-        print(f"Saved {report}  (all pages)")
 
 
 def main():
@@ -156,14 +142,12 @@ def main():
     print()
 
     export_dir = Path(args.export) if args.export else excel.with_name(f"{excel.stem}_dashboards")
-    for slug, fig in pages:
-        add_export_buttons(fig, export_dir, f"{excel.stem}_{slug}")
     if args.export:
         export_pages(pages, export_dir, args.format, excel.stem)
 
     if not args.no_show:
-        # One window per page; all stay open until closed.
-        plt.show()
+        # One window; the navigation bar switches between the pages.
+        DashboardViewer(pages, export_dir, excel.stem, excel.name).run()
 
 
 if __name__ == "__main__":

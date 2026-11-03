@@ -20,7 +20,7 @@ python main.py sample_measurements.xlsx
 ```
 
 The first command installs the dependencies. The second creates a 60-row test
-file. The third opens six dashboard windows and prints the statistics to the
+file. The third opens the dashboard window and prints the statistics to the
 console.
 
 ### Command-line options
@@ -31,9 +31,9 @@ console.
 | `--sheet NAME` | Worksheet name or index (default: the first sheet) |
 | `--export DIR` | Save every page to `DIR` without clicking anything |
 | `--format pdf\|png\|both` | Format for `--export` (default `pdf`). PDF export also writes `<name>_report.pdf` with all pages in one file |
-| `--no-show` | Don't open windows (for batch export) |
+| `--no-show` | Don't open the window (for batch export) |
 
-Example: export a full PDF report without opening any windows.
+Example: export a full PDF report without opening the window.
 
 ```bash
 python main.py reference_data.xlsx --export reports --no-show
@@ -71,14 +71,31 @@ The type is **detected automatically**, not hard-coded (see
 
 ## Dashboards
 
-### Page order
+### One window, six pages
 
+All results open in **a single window** that shows one page at a time. A
+navigation bar along the bottom switches pages:
+
+```
+[<]  [clock] [p70] [p140] [sfdr] [noise] [Summary]  [>]     [Save PNG] [Save PDF]
+```
+
+| Control | Action |
+|---|---|
+| Page buttons | Jump straight to that page; the current page is highlighted in blue |
+| `<` / `>` | Previous / next page (wraps around at either end) |
+| ← / → or Page Up / Page Down | Previous / next page |
+| Home / End | First / last page |
+| `1` … `6` | Jump to page 1 … 6 |
+| **Save PNG** / **Save PDF** | Save the page currently shown (see [Saving pages](#saving-pages)) |
+
+Page order:
 1. Continuous parameters, in sheet order: `clock`, `p70`, `p140`, `sfdr`.
 2. Discrete parameters: `noise`.
 3. Executive summary.
 
-The display order doesn't change the dataset's column order. Each window title
-and page footer shows its page number (e.g. `page 2/6`).
+The display order doesn't change the dataset's column order. The window title
+and the page footer show the current page (e.g. `page 2/6`).
 
 ### Continuous parameter page
 
@@ -130,41 +147,68 @@ Mean, WM and APD aren't shown, and the KS test isn't run (see below).
 
 ### Saving pages
 
-- **From a window:** each page has **Save PNG** and **Save PDF** buttons in its
-  bottom-left corner. They save that page to `<excel name>_dashboards/` next to the
-  Excel file, or to the `--export` folder if one was given. The buttons don't
-  appear in the saved image.
-- **All pages at once:** use `--export DIR` (see the
+- **From the window:** **Save PNG** / **Save PDF** save the page currently shown.
+  - Files go to `<excel name>_dashboards/` next to the Excel file, or to the
+    `--export` folder if one was given.
+  - Names follow the page, e.g. `sample_measurements_05_noise.png`.
+  - The navigation bar isn't included in the saved file. A confirmation appears
+    in the window's top-right corner.
+- **All pages at once, without the window:** use `--export DIR` (see the
   [command-line options](#command-line-options)).
-- **Manual:** the standard matplotlib toolbar save icon also works.
+- **Manual:** the standard matplotlib toolbar save icon also works, but it saves
+  the window as shown, navigation bar included.
 
 ## Statistics reference
 
-Notation: $x_1, \dots, x_n$ are the valid (numeric) values of one parameter, and
-$x_{(1)} \le \dots \le x_{(n)}$ are the same values sorted.
+Notation: x₁, …, xₙ are the valid (numeric) values of one parameter;
+x(1) ≤ x(2) ≤ … ≤ x(n) are the same values sorted.
 
 ### Mean, median, standard deviation
 
-$$\bar{x} = \frac{1}{n}\sum_i x_i, \qquad
-\sigma = \sqrt{\frac{1}{n-1}\sum_i (x_i - \bar{x})^2}$$
+```math
+\bar{x} = \frac{1}{n}\sum_{i=1}^{n} x_i
+\qquad\qquad
+\sigma = \sqrt{\frac{1}{n-1}\sum_{i=1}^{n} \left(x_i - \bar{x}\right)^2}
+```
 
 The median is the middle sorted value (the average of the two middle values when
-$n$ is even). The mean and σ react strongly to outliers; the median, WM and APD
+n is even). The mean and σ react strongly to outliers; the median, WM and APD
 don't.
 
 ### Weighted Mean (WM)
 
 WM is a robust centre that gives the most weight to where the data is
-**densest**. It works on neighbouring pairs of sorted values:
+**densest**. It walks through the sorted values and looks at each neighbouring
+pair x(i), x(i+1), for i = 1 … n−1:
 
-$$m_i = \frac{x_{(i)} + x_{(i+1)}}{2}, \qquad
-g_i = x_{(i+1)} - x_{(i)}, \qquad i = 1, \dots, n-1$$
+| Symbol | Formula | Meaning |
+|---|---|---|
+| mᵢ | (x(i) + x(i+1)) / 2 | Midpoint of the pair |
+| gᵢ | x(i+1) − x(i) | Gap between the pair (never negative, the values are sorted) |
+| wᵢ | 1 / gᵢ, or **200** when gᵢ = 0 | Weight of the midpoint |
+| WM | Σ wᵢ·mᵢ / Σ wᵢ | Weighted average of the midpoints |
 
-Each midpoint $m_i$ is weighted by the inverse of its gap $g_i$:
+The same in mathematical notation:
 
-$$w_i = \begin{cases} 1 / g_i & g_i > 0 \\ 200 & g_i = 0 \text{ (identical values)} \end{cases}
-\qquad\qquad
-\mathrm{WM} = \frac{\sum_{i=1}^{n-1} w_i\, m_i}{\sum_{i=1}^{n-1} w_i}$$
+```math
+m_i = \frac{x_{(i)} + x_{(i+1)}}{2}
+```
+
+```math
+g_i = x_{(i+1)} - x_{(i)}
+```
+
+```math
+w_i =
+\begin{cases}
+  \dfrac{1}{g_i} & \text{if } g_i > 0 \\[6pt]
+  200            & \text{if } g_i = 0 \;\text{(identical values)}
+\end{cases}
+```
+
+```math
+\mathrm{WM} = \frac{\sum_{i=1}^{n-1} w_i \, m_i}{\sum_{i=1}^{n-1} w_i}
+```
 
 - **Close pairs dominate.** Tightly packed values (small gaps) carry large weights;
   an isolated outlier sits next to a large gap and barely counts.
@@ -172,7 +216,7 @@ $$w_i = \begin{cases} 1 / g_i & g_i > 0 \\ 200 & g_i = 0 \text{ (identical value
   Only those weights are replaced; no other weight is capped. This matches the
   original MATLAB code (`weights(weights == Inf) = 200`).
 - **Why 200 is safe:** all measurements are rounded to **2 decimal places**, so
-  every non-zero gap is at least 0.01 and its weight at most $1/0.01 = 100$.
+  every non-zero gap is at least 0.01 and its weight at most 1 / 0.01 = 100.
   Identical values (200) therefore always carry the highest weight. If the data
   ever has finer precision, gaps below 0.005 would get weights above 200 and this
   value should be revisited.
@@ -180,40 +224,56 @@ $$w_i = \begin{cases} 1 / g_i & g_i > 0 \\ 200 & g_i = 0 \text{ (identical value
   reference file, 14.9 and 15.01 sit close together, which puts `clock`'s WM
   (14.48) well above its mean (13.84).
 
-### APD – Absolute Pairwise Difference (Rousseeuw–Croux $S_n$)
+### APD – Absolute Pairwise Difference (Rousseeuw–Croux Sₙ)
 
 APD is a robust measure of spread: an outlier-resistant replacement for σ.
 
-$$\mathrm{APD} = S_n = c \cdot \operatorname*{med}_{i}\Big( \operatorname*{med}_{j \ne i} |x_i - x_j| \Big),
-\qquad c = 1.1926$$
+```math
+\mathrm{APD} = S_n = c \cdot \operatorname{med}_{i} \left( \operatorname{med}_{j \ne i} \left| x_i - x_j \right| \right),
+\qquad c = 1.1926
+```
 
-1. For each value $x_i$, take the **median distance** to all other values. This is
+1. For each value xᵢ, take the **median distance** to all other values. This is
    the typical distance from that point to the rest of the data.
 2. Take the **median of those medians**.
-3. Multiply by $c = 1.1926$. This constant makes $S_n$ equal to σ on average when
-   the data is normal, so APD and σ can be compared directly.
+3. Multiply by c = 1.1926. This constant makes Sₙ equal to σ on average when the
+   data is normal, so APD and σ can be compared directly.
 
 Properties:
 - **Breakdown point of 50%:** almost half the data can be replaced by arbitrary
   values before APD is ruined. A single outlier would ruin σ.
-- **Unlike the MAD** (median absolute deviation), $S_n$ doesn't assume the data is
+- **Unlike the MAD** (median absolute deviation), Sₙ doesn't assume the data is
   symmetric around a centre.
-- **APD = 0** when more than half of the values are identical. The analysis then
-  uses σ instead (noted as "σ" in the plots).
 
 Reference: Rousseeuw & Croux (1993), *Alternatives to the Median Absolute
 Deviation*, JASA 88(424). This code uses the ordinary median for both steps and
-excludes $j = i$. The paper's low/high-median variant gives nearly identical
-values.
+excludes j = i. The paper's low/high-median variant gives nearly identical values.
+
+#### When APD is 0 (console warning)
+
+If more than half of the values are identical, most pairwise distances are 0,
+so both medians are 0 and **APD = 0**. An outlier band of WM ± 3·0 would have zero
+width: every value different from WM would be flagged. The KS test would also
+divide by zero.
+
+The program then:
+- prints a warning: `UserWarning: APD of '<name>' is 0.0 (too many identical
+  values); using sigma = … for outliers and the normality test`. Many terminals
+  and IDEs show warnings in red;
+- uses **σ instead of APD** for the outlier band, the KS test and the normal
+  curves. The page labels change accordingly, e.g. "Outliers (WM ± 3·sigma)";
+- still reports APD itself as 0.
+
+This only applies to **continuous** parameters. Integer data such as `noise` is
+detected as discrete and never uses APD, so it doesn't produce this warning.
 
 ### Outliers
 
-- **Continuous:** a value is an outlier when it lies outside
-  $\mathrm{WM} \pm 3 \cdot \mathrm{APD}$. For normal data that band covers about
-  99.7% of values.
-- **Discrete:** a value is an outlier when $|x - \text{mode}| > \max(3\sigma,\ 1)$.
-  The minimum of 1 means a neighbour of the mode (e.g. −105 when the mode is −104)
-  is never flagged, because one step is ordinary measurement jitter.
+- **Continuous:** a value is an outlier when it lies outside WM ± 3·APD. For
+  normal data that band covers about 99.7% of values.
+- **Discrete:** a value is an outlier when |x − mode| > max(3σ, 1). The minimum of
+  1 means a neighbour of the mode (e.g. −105 when the mode is −104) is never
+  flagged, because one step is ordinary measurement jitter.
 
 Outliers are listed by serial number on each page and in the console.
 
@@ -237,34 +297,37 @@ The test answers one question: *could these values plausibly come from a normal
 distribution?*
 
 **Setup.** Each value is standardised with the robust centre and spread,
-$z_i = (x_i - \mathrm{WM}) / \mathrm{APD}$. The $z_i$ are then compared with the
-standard normal distribution $\Phi$:
+zᵢ = (xᵢ − WM) / APD. The zᵢ are then compared with the standard normal
+distribution Φ:
 
-- $H_0$ (null hypothesis): the data comes from $\mathcal{N}(\mathrm{WM}, \mathrm{APD}^2)$;
-- $H_1$: it doesn't.
+- H₀ (null hypothesis): the data comes from a normal distribution with mean WM and
+  standard deviation APD;
+- H₁: it doesn't.
 
-**Test statistic.** The empirical CDF $F_n(z)$ is the fraction of samples
-$\le z$. The KS statistic is the **largest vertical gap** between $F_n$ and
-$\Phi$:
+**Test statistic.** The empirical CDF Fₙ(z) is the fraction of samples ≤ z. The
+KS statistic Dₙ is the **largest vertical gap** between Fₙ and Φ:
 
-$$D_n = \sup_z \big|F_n(z) - \Phi(z)\big|
-= \max_{i}\, \max\!\Big(\tfrac{i}{n} - \Phi(z_{(i)}),\ \Phi(z_{(i)}) - \tfrac{i-1}{n}\Big)$$
+```math
+D_n = \sup_{z} \left| F_n(z) - \Phi(z) \right|
+    = \max_{i} \max\left( \frac{i}{n} - \Phi\left(z_{(i)}\right),\; \Phi\left(z_{(i)}\right) - \frac{i-1}{n} \right)
+```
 
 This is the gap visible in the *Empirical CDF vs. normal* plot. For example,
 D = 0.105 means the two curves are at most 10.5 percentage points apart.
 
-**p-value.** If $H_0$ is true, the distribution of $D_n$ doesn't depend on which
-continuous distribution is tested. For large $n$, $\sqrt{n}\,D_n$ follows the
-Kolmogorov distribution:
+**p-value.** If H₀ is true, the distribution of Dₙ doesn't depend on which
+continuous distribution is tested. For large n, √n·Dₙ follows the Kolmogorov
+distribution:
 
-$$P\big(\sqrt{n}\,D_n \le t\big) \;\to\; 1 - 2\sum_{k=1}^{\infty} (-1)^{k-1} e^{-2k^2t^2}$$
+```math
+P\left(\sqrt{n}\, D_n \le t\right) \;\longrightarrow\; 1 - 2\sum_{k=1}^{\infty} (-1)^{k-1} e^{-2k^2 t^2}
+```
 
 `p_normal` is the probability of seeing a gap at least as large as the observed
-one if the data really were normal:
-$p = P(D_n \ge D_{\text{observed}} \mid H_0)$. SciPy's `kstest` computes this
-from the **exact** distribution of $D_n$ for the actual $n$, so it is valid for
-small samples too. The formula above is the large-$n$ limit, useful for intuition:
-at α = 0.05 the critical gap is about $1.36/\sqrt{n}$ (≈ 0.18 for n = 60).
+one if the data really were normal: p = P(Dₙ ≥ D_observed | H₀). SciPy's `kstest`
+computes this from the **exact** distribution of Dₙ for the actual n, so it is
+valid for small samples too. The formula above is the large-n limit, useful for
+intuition: at α = 0.05 the critical gap is about 1.36 / √n (≈ 0.18 for n = 60).
 
 **Decision (`h0`).** This follows MATLAB's `[h, p] = kstest(...)` at α = 0.05:
 
@@ -280,9 +343,9 @@ at α = 0.05 the critical gap is about $1.36/\sqrt{n}$ (≈ 0.18 for n = 60).
 - **With many samples, small deviations can reject normality** even when they
   don't matter in practice. Always look at the Q-Q plot and histogram as well.
 - **The p-value is slightly optimistic.** WM and APD are estimated from the same
-  data being tested, so the normal curve is already fitted to it and $D_n$ comes
-  out smaller than it would against a fixed distribution. The Lilliefors test
-  corrects for this; the original MATLAB method is kept here.
+  data being tested, so the normal curve is already fitted to it and Dₙ comes out
+  smaller than it would against a fixed distribution. The Lilliefors test corrects
+  for this; the original MATLAB method is kept here.
 - **The test assumes continuous data.** It isn't valid for integer data with many
   ties, which would always "fail". That's why it's **not run for discrete
   parameters** such as `noise`.
@@ -306,19 +369,19 @@ the continuous statistics.
 - **Bin width** uses NumPy's `auto` rule: the narrower of two widths, so the bins
   adapt to each parameter's spread and sample size. The rule used is shown in the
   plot title.
-  - **Freedman–Diaconis:** $2\,\mathrm{IQR}/n^{1/3}$; robust to outliers.
-  - **Sturges:** $\text{range}/(\log_2 n + 1)$; suited to small samples.
+  - **Freedman–Diaconis:** 2·IQR / n^(1/3); robust to outliers.
+  - **Sturges:** range / (log₂ n + 1); suited to small samples.
 - **KDE** (kernel density estimate, orange): a smoothed histogram from SciPy's
   `gaussian_kde`, scaled to counts. It shows the true shape, e.g. two peaks or a
   long tail.
-- **Normal curve** (green, dashed): $\mathcal{N}(\mathrm{WM}, \mathrm{APD}^2)$, the
-  same distribution the KS test uses. Where the KDE and this curve differ, the data
-  isn't normal.
+- **Normal curve** (green, dashed): a normal distribution with mean WM and
+  standard deviation APD, the same one the KS test uses. Where the KDE and this
+  curve differ, the data isn't normal.
 
 ### Q-Q plot
 
-The sorted values $x_{(i)}$ are plotted against the matching standard-normal
-quantiles. Normal data follows the line $\mathrm{WM} + \mathrm{APD}\cdot z$.
+The sorted values x(i) are plotted against the matching standard-normal quantiles
+z. Normal data follows the line WM + APD·z.
 
 | Pattern | Meaning |
 |---|---|
@@ -342,8 +405,8 @@ rows gives "n/a".
 
 Each parameter is put on a common, unitless scale:
 
-- **continuous:** $z = (x - \mathrm{WM}) / \mathrm{APD}$;
-- **discrete:** $z = (x - \text{mode}) / \sigma$.
+- **continuous:** z = (x − WM) / APD;
+- **discrete:** z = (x − mode) / σ.
 
 On this scale every parameter is centred at 0 with comparable spread, and outliers
 of the continuous parameters lie beyond ±3.
@@ -381,7 +444,7 @@ Options: `python create_dummy_excel.py my_file.xlsx --rows 100 --seed 7`.
 | `load_excel.py` | Finds and reads the measurement table |
 | `statistical_data.py` | Continuous and discrete statistics, automatic type detection |
 | `weighted_mean.py` | Weighted Mean (WM) |
-| `absolute_pairwise_difference.py` | APD ($S_n$) |
-| `dashboards.py` | Parameter pages, summary page, Save buttons and export |
+| `absolute_pairwise_difference.py` | APD (Sₙ) |
+| `dashboards.py` | Page drawing, the single-window viewer with navigation, Save and export |
 | `create_dummy_excel.py` | Test data generator |
 | `reference_data.xlsx` | Real reference measurements |

@@ -1,4 +1,8 @@
-"""Dashboards: one figure per parameter plus an executive summary page.
+"""Dashboards: one page per parameter plus an executive summary page.
+
+All pages are shown in ONE window (DashboardViewer) with a navigation bar:
+    [<]  [clock] [p70] [p140] [sfdr] [noise] [Summary]  [>]   [Save PNG] [Save PDF]
+Keyboard: Left/Right arrows or PageUp/PageDown, Home/End, digits 1-9.
 
 Continuous parameter page (2 x 2 plots + statistics panel):
     data vs. sample index | histogram (automatic bins) + density curves
@@ -13,14 +17,20 @@ Summary page:
     continuous summary table, discrete summary table,
     Spearman correlation heatmap, overview box plot (robust z-scores)
 
-Every page carries "Save PNG" / "Save PDF" buttons (see add_export_buttons).
+Each page builder draws into a figure it is given, so the same code renders
+a page inside the viewer window and into a separate figure for export
+(save_page / export_pages).
 """
 
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.colors import LinearSegmentedColormap
+from matplotlib.figure import Figure
 from matplotlib.ticker import MaxNLocator
 from matplotlib.widgets import Button
 from scipy import stats
@@ -68,12 +78,12 @@ plt.rcParams.update({
 # =========================================================================== #
 # Continuous parameter page
 # =========================================================================== #
-def continuous_dashboard(values, serials, st, page_label, source):
-    """Dashboard for a continuous parameter. ``st`` is a ContinuousStats."""
+def continuous_dashboard(fig, values, serials, st, page_label, source):
+    """Draw the page of a continuous parameter into ``fig`` (``st``: ContinuousStats)."""
     x = np.asarray(values, dtype=float)
     valid = x[~np.isnan(x)]
-    fig, (ax_data, ax_hist, ax_cdf, ax_qq, ax_panel) = _page_layout(
-        f"{st.name}  -  continuous parameter", page_label, source)
+    ax_data, ax_hist, ax_cdf, ax_qq, ax_panel = _page_layout(
+        fig, f"{st.name}  -  continuous parameter", page_label, source)
     scale_ok = np.isfinite(st.scale) and st.scale > 0
     index = np.arange(1, x.size + 1)
 
@@ -182,11 +192,11 @@ def continuous_dashboard(values, serials, st, page_label, source):
 # =========================================================================== #
 # Discrete parameter page
 # =========================================================================== #
-def discrete_dashboard(values, serials, st, page_label, source):
-    """Dashboard for an integer-valued parameter. ``st`` is a DiscreteStats."""
+def discrete_dashboard(fig, values, serials, st, page_label, source):
+    """Draw the page of an integer-valued parameter into ``fig`` (``st``: DiscreteStats)."""
     x = np.asarray(values, dtype=float)
-    fig, (cell_data, ax_bar, ax_cdf, ax_table, ax_panel) = _page_layout(
-        f"{st.name}  -  discrete (integer) parameter", page_label, source,
+    cell_data, ax_bar, ax_cdf, ax_table, ax_panel = _page_layout(
+        fig, f"{st.name}  -  discrete (integer) parameter", page_label, source,
         split_first=True)
     ax_data, ax_margin, ax_roll = cell_data
     index = np.arange(1, x.size + 1)
@@ -318,10 +328,9 @@ def discrete_dashboard(values, serials, st, page_label, source):
 # =========================================================================== #
 # Summary page
 # =========================================================================== #
-def summary_dashboard(test, results, parameter_order, page_label, source):
-    """Executive summary across all parameters."""
-    fig = plt.figure(figsize=FIGSIZE)
-    _window_title(fig, f"{page_label} - Summary")
+def summary_dashboard(fig, test, results, parameter_order, page_label, source):
+    """Draw the executive summary across all parameters into ``fig``."""
+    fig.set_facecolor(SURFACE)
     fig.suptitle("Executive summary  -  all parameters", fontsize=15, fontweight="bold",
                  x=0.04, ha="left", y=0.965)
     _footer(fig, page_label, source)
@@ -434,54 +443,149 @@ def summary_dashboard(test, results, parameter_order, page_label, source):
 
 
 # =========================================================================== #
-# Export
+# Pages, export and the single-window viewer
 # =========================================================================== #
-def add_export_buttons(fig, export_dir, file_stem):
-    """Add 'Save PNG' / 'Save PDF' buttons that write this page to ``export_dir``."""
-    status = fig.text(0.215, 0.018, "", fontsize=8, color=INK_SECONDARY, va="center")
-    buttons = []
-    for i, ext in enumerate(("png", "pdf")):
-        ax = fig.add_axes([0.012 + i * 0.1, 0.006, 0.09, 0.032])
-        button = Button(ax, f"Save {ext.upper()}", color=PANEL, hovercolor=GRID)
-        button.label.set_fontsize(9)
-
-        def on_click(_event, ext=ext):
-            path = save_figure(fig, Path(export_dir) / f"{file_stem}.{ext}")
-            status.set_text(f"Saved: {path}")
-            print(f"Saved {path}")
-            fig.canvas.draw_idle()
-
-        button.on_clicked(on_click)
-        buttons.append(button)
-    fig._export_buttons = buttons  # keep references (widgets are weakly held)
-    fig._export_status = status
+@dataclass
+class Page:
+    slug: str  # file-name part, e.g. "01_clock"
+    label: str  # navigation label, e.g. "clock" or "Summary"
+    draw: Callable  # draw(fig) renders the page into a figure
 
 
-def save_figure(fig, path):
-    """Save one page without the export buttons and status text."""
+def save_page(page, path):
+    """Render ``page`` into a fresh figure (no navigation bar) and save it."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    hidden = [b.ax for b in getattr(fig, "_export_buttons", [])]
-    status = getattr(fig, "_export_status", None)
-    if status is not None:
-        hidden.append(status)
-    for artist in hidden:
-        artist.set_visible(False)
-    try:
-        fig.savefig(path, dpi=150, facecolor=fig.get_facecolor())
-    finally:
-        for artist in hidden:
-            artist.set_visible(True)
+    fig = Figure(figsize=FIGSIZE, facecolor=SURFACE)
+    page.draw(fig)
+    fig.savefig(path, dpi=150, facecolor=SURFACE)
     return path
+
+
+def export_pages(pages, export_dir, fmt, stem):
+    """Save every page (headless); PDF export also writes one combined report."""
+    export_dir = Path(export_dir)
+    formats = ["png", "pdf"] if fmt == "both" else [fmt]
+    for page in pages:
+        for ext in formats:
+            print(f"Saved {save_page(page, export_dir / f'{stem}_{page.slug}.{ext}')}")
+    if "pdf" in formats:
+        report = export_dir / f"{stem}_report.pdf"
+        with PdfPages(report) as pdf:
+            for page in pages:
+                fig = Figure(figsize=FIGSIZE, facecolor=SURFACE)
+                page.draw(fig)
+                pdf.savefig(fig, facecolor=SURFACE)
+        print(f"Saved {report}  (all pages)")
+
+
+class DashboardViewer:
+    """One window showing one page at a time, with page navigation and export.
+
+    Navigation bar (bottom of the window):
+        [<]  [clock] [p70] [p140] [sfdr] [noise] [Summary]  [>]   [Save PNG] [Save PDF]
+    The active page's button is highlighted. Save writes the visible page
+    (without the navigation bar) to ``export_dir``.
+    Keyboard: Left/Right or PageUp/PageDown = previous/next page,
+    Home/End = first/last page, 1-9 = jump to that page.
+    """
+
+    BAR_Y, BAR_H = 0.006, 0.032
+
+    def __init__(self, pages, export_dir, file_stem, source):
+        self.pages = pages
+        self.export_dir = Path(export_dir)
+        self.file_stem = file_stem
+        self.source = source
+        self.index = 0
+        self._widgets = []
+        # Free the arrow keys (matplotlib binds them to zoom history by default).
+        for key, name in (("left", "keymap.back"), ("right", "keymap.forward")):
+            plt.rcParams[name] = [k for k in plt.rcParams[name] if k != key]
+        self.fig = plt.figure(figsize=FIGSIZE)
+        self.fig.canvas.mpl_connect("key_press_event", self._on_key)
+        self.show_page(0)
+
+    def run(self):
+        """Open the window and block until it is closed."""
+        plt.show()
+
+    # ---- navigation --------------------------------------------------------
+    def show_page(self, index, status=""):
+        self.index = index % len(self.pages)
+        page = self.pages[self.index]
+        for widget in self._widgets:
+            widget.disconnect_events()
+        self._widgets = []
+        self.fig.clear()
+        page.draw(self.fig)
+        self._add_navigation()
+        self._status = self.fig.text(0.985, 0.965, status, ha="right", va="center",
+                                     fontsize=9, color=WM_COLOR)
+        _window_title(self.fig, f"AlphaData - {page.label} "
+                                f"({self.index + 1}/{len(self.pages)}) - {self.source}")
+        self.fig.canvas.draw_idle()
+
+    def next_page(self, _event=None):
+        self.show_page(self.index + 1)
+
+    def previous_page(self, _event=None):
+        self.show_page(self.index - 1)
+
+    def save(self, ext):
+        page = self.pages[self.index]
+        path = save_page(page, self.export_dir / f"{self.file_stem}_{page.slug}.{ext}")
+        print(f"Saved {path}")
+        self._status.set_text(f"Saved {path.name}  ->  {path.parent}")
+        self.fig.canvas.draw_idle()
+        return path
+
+    # ---- controls ----------------------------------------------------------
+    def _add_navigation(self):
+        x = 0.012
+        x = self._button(x, 0.03, "<", self.previous_page)
+        x += 0.004
+        for i, page in enumerate(self.pages):
+            x = self._button(x, 0.058, page.label,
+                             lambda _e, i=i: self.show_page(i), active=i == self.index)
+        x += 0.004
+        x = self._button(x, 0.03, ">", self.next_page)
+        x += 0.02
+        x = self._button(x, 0.066, "Save PNG", lambda _e: self.save("png"))
+        self._button(x, 0.066, "Save PDF", lambda _e: self.save("pdf"))
+
+    def _button(self, x, width, label, callback, active=False):
+        ax = self.fig.add_axes([x, self.BAR_Y, width, self.BAR_H])
+        color = DATA if active else PANEL
+        button = Button(ax, label, color=color, hovercolor=color if active else GRID)
+        button.label.set_fontsize(9)
+        button.label.set_color(SURFACE if active else INK)
+        if active:
+            button.label.set_fontweight("bold")
+        button.on_clicked(callback)
+        self._widgets.append(button)  # keep a reference (widgets are weakly held)
+        return x + width + 0.004
+
+    def _on_key(self, event):
+        key = event.key or ""
+        if key in ("right", "pagedown"):
+            self.next_page()
+        elif key in ("left", "pageup"):
+            self.previous_page()
+        elif key == "home":
+            self.show_page(0)
+        elif key == "end":
+            self.show_page(len(self.pages) - 1)
+        elif key.isdigit() and 1 <= int(key) <= len(self.pages):
+            self.show_page(int(key) - 1)
 
 
 # =========================================================================== #
 # Shared helpers
 # =========================================================================== #
-def _page_layout(title, page_label, source, split_first=False):
-    """Figure with a 2 x 2 plot grid on the left and a statistics panel on the right."""
-    fig = plt.figure(figsize=FIGSIZE)
-    _window_title(fig, f"{page_label} - {title.split()[0]}")
+def _page_layout(fig, title, page_label, source, split_first=False):
+    """2 x 2 plot grid on the left and a statistics panel on the right of ``fig``."""
+    fig.set_facecolor(SURFACE)
     fig.suptitle(title, fontsize=15, fontweight="bold", x=0.04, ha="left", y=0.965)
     _footer(fig, page_label, source)
     gs = fig.add_gridspec(2, 3, width_ratios=[1, 1, 0.58], left=0.05, right=0.985,
@@ -497,7 +601,7 @@ def _page_layout(title, page_label, source, split_first=False):
         first = fig.add_subplot(gs[0, 0])
     axes = [first, fig.add_subplot(gs[0, 1]), fig.add_subplot(gs[1, 0]),
             fig.add_subplot(gs[1, 1]), fig.add_subplot(gs[:, 2])]
-    return fig, axes
+    return axes
 
 
 def _footer(fig, page_label, source):
