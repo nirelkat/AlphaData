@@ -38,7 +38,6 @@ DEFAULT_OUTPUT = "sample_measurements.xlsx"
 START_ROW, START_COL = 2, 1
 
 # clock: normal(mean, std) kept inside [low, high], rounded to 2 decimal places.
-# Also used by main.py's synthetic mode.
 CLOCK_MEAN, CLOCK_STD = 13.0, 0.9
 CLOCK_RANGE = (11.0, 15.0)
 

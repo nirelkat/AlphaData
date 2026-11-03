@@ -1,57 +1,100 @@
-"""Port of statisticalData.m.
+"""Statistics for one parameter (port and extension of statisticalData.m).
 
-Computes classic and robust statistics for one parameter, runs a
-Kolmogorov-Smirnov normality test and draws the three original figures:
-  1. data vs. sample index, with outliers in red and the mean / WM lines
-  2. histogram (bin width 0.5)
-  3. empirical CDF vs. a normal CDF centred on WM with scale APD
+Two kinds of parameters are handled:
+
+* continuous (clock, p70, p140, sfdr): mean, median, WM, sigma, APD, outliers
+  (WM +/- 3*APD), shape (skewness, kurtosis) and the Kolmogorov-Smirnov
+  normality test - the original MATLAB statistics plus shape measures.
+* discrete (noise): integer-valued data with few distinct values. Mean, WM,
+  APD and the KS test are not meaningful there, so the result holds the mode,
+  its share, the frequency table and the off-mode share instead.
+
+``is_discrete`` decides which one applies. Plotting lives in dashboards.py.
 """
 
 import warnings
+from dataclasses import dataclass, field
 
-import matplotlib.pyplot as plt
 import numpy as np
 from scipy import stats
 
 from absolute_pairwise_difference import absolute_pairwise_difference
 from weighted_mean import weighted_mean
 
-HISTOGRAM_BIN_WIDTH = 0.5  # MATLAB: histogram(x, 'BinWidth',0.5)
 OUTLIER_FACTOR = 3  # MATLAB: x > WM+3*APD | x < WM-3*APD
+KS_ALPHA = 0.05  # MATLAB kstest default significance level
+
+# A parameter is treated as discrete when every value is a whole number and it
+# has at most this many distinct values (integer data with a wide spread is
+# better described by the continuous statistics).
+MAX_DISCRETE_LEVELS = 15
+
+
+# --------------------------------------------------------------------------- #
+# Detection
+# --------------------------------------------------------------------------- #
+def is_discrete(x):
+    """True for integer-valued data with few distinct values (e.g. noise)."""
+    valid = _valid(x)
+    if valid.size == 0:
+        return False
+    whole = np.all(np.isclose(valid, np.round(valid)))
+    return bool(whole and np.unique(valid).size <= MAX_DISCRETE_LEVELS)
+
+
+# --------------------------------------------------------------------------- #
+# Continuous parameters
+# --------------------------------------------------------------------------- #
+@dataclass
+class ContinuousStats:
+    name: str
+    n: int  # valid (numeric) samples
+    missing: int  # blank / text cells
+    average: float
+    median: float
+    wm: float
+    sigma: float
+    apd: float
+    scale: float  # APD, or sigma when APD == 0
+    scale_name: str  # "APD" or "sigma"
+    band_low: float  # WM - 3*scale
+    band_high: float  # WM + 3*scale
+    outliers: np.ndarray  # boolean mask over all rows (MATLAB variable I)
+    skewness: float
+    kurtosis: float  # excess kurtosis (0 for a normal distribution)
+    ks_statistic: float  # D
+    p_normal: float
+    h0: float  # 1 = normality rejected, 0 = not rejected, NaN = not run
+    kind: str = field(default="continuous", init=False)
 
 
 def statistical_data(x, parameter_name):
-    """Python equivalent of
-    ``[average, Median, WM, sigma, APD, h0, p_normal] = statisticalData(x, parameterName)``
+    """Continuous statistics for one parameter.
 
-    An 8th output, ``outliers`` (boolean mask, MATLAB variable ``I``), is also
-    returned so the caller can report which samples were flagged.
+    MATLAB: [average, Median, WM, sigma, APD, h0, p_normal] = statisticalData(x, parameterName)
     """
     x = np.asarray(x, dtype=float).ravel()
-    valid = x[~np.isnan(x)]
-
+    valid = _valid(x)
     if valid.size == 0:
         # FIX: the MATLAB code had no guard and failed deep inside the
         # plotting / kstest calls for an all-NaN column.
         raise ValueError(f"Parameter '{parameter_name}' contains no numeric values.")
 
-    # ---- Statistics --------------------------------------------------------
     # MATLAB: average = mean(x,"omitnan");
-    average = float(np.nanmean(x))
+    average = float(np.mean(valid))
     # MATLAB: Median = median(x,"omitnan");
-    median = float(np.nanmedian(x))
+    median = float(np.median(valid))
     # MATLAB: WM = WeightedMean(x);
-    wm = weighted_mean(x)
+    wm = weighted_mean(valid)
     # MATLAB: sigma = std(x,"omitnan");   (MATLAB std uses N-1 -> ddof=1)
-    sigma = float(np.nanstd(x, ddof=1)) if valid.size > 1 else np.nan
+    sigma = float(np.std(valid, ddof=1)) if valid.size > 1 else np.nan
     # MATLAB: APD = AbsolutePairwiseDifference(x);
-    apd = absolute_pairwise_difference(x)
+    apd = absolute_pairwise_difference(valid)
 
-    # FIX: scale used for the outlier band, the KS test and the CDF curve.
-    # APD is 0 when more than half of the values are identical - e.g. "noise",
-    # which is measured in whole numbers and is mostly -104. The original then
-    # had a zero-width band (every value != WM flagged as an outlier) and
-    # divided by zero in kstest. In that case sigma is used instead of APD.
+    # FIX: scale used for the outlier band, the KS test and the normal curves.
+    # APD is 0 when more than half of the values are identical; the original
+    # then had a zero-width outlier band and divided by zero in kstest.
+    # In that case sigma is used instead of APD.
     if np.isfinite(apd) and apd > 0:
         scale, scale_name = apd, "APD"
     else:
@@ -60,108 +103,120 @@ def statistical_data(x, parameter_name):
             f"APD of '{parameter_name}' is {apd} (too many identical values); "
             f"using sigma = {sigma:.4g} for outliers and the normality test."
         )
-    scale_ok = np.isfinite(scale) and scale > 0
+    scale_ok = bool(np.isfinite(scale) and scale > 0)
 
-    # MATLAB: I = (x > WM+3*APD) | (x < WM-3*APD);
-    # (NaN comparisons are False, as in MATLAB.)
+    # MATLAB: I = (x > WM+3*APD) | (x < WM-3*APD);   (NaN compares False)
+    band_low, band_high = wm - OUTLIER_FACTOR * scale, wm + OUTLIER_FACTOR * scale
     if scale_ok:
         with np.errstate(invalid="ignore"):
-            outliers = (x > wm + OUTLIER_FACTOR * scale) | (x < wm - OUTLIER_FACTOR * scale)
+            outliers = (x > band_high) | (x < band_low)
     else:
         outliers = np.zeros(x.shape, dtype=bool)  # all values identical
 
-    # MATLAB: range = 1:length(x);
-    # (renamed: "range" shadowed a MATLAB built-in; MATLAB indices are 1-based)
-    sample_index = np.arange(1, x.size + 1)
+    # Shape: skewness (asymmetry) and excess kurtosis (tail weight), bias-corrected.
+    if valid.size >= 4 and np.ptp(valid) > 0:
+        skewness = float(stats.skew(valid, bias=False))
+        kurtosis = float(stats.kurtosis(valid, fisher=True, bias=False))
+    else:
+        skewness = kurtosis = np.nan
 
-    # ---- Figure 1: data vs. sample index ------------------------------------
-    # MATLAB: figure; hold on
-    fig1, ax1 = plt.subplots()
-    _window_title(fig1, f"{parameter_name} - data vs. sample")
-    # MATLAB: plot(x, '.b', 'MarkerSize', 15)
-    ax1.plot(sample_index, x, ".b", markersize=15, label="data")
-    # MATLAB: plot(range(I), x(I), '.r', 'MarkerSize', 15)
-    ax1.plot(sample_index[outliers], x[outliers], ".r", markersize=15, label="outliers")
-    # MATLAB: plot(1:length(x), average*ones(size(x)), '--')
-    ax1.plot(sample_index, np.full(x.shape, average), "--", label="mean")
-    # MATLAB: plot(1:length(x), WM*ones(size(x)), '--')
-    ax1.plot(sample_index, np.full(x.shape, wm), "--", label="WM")
-    # MATLAB: legend('data', 'mean', 'WM')
-    # FIX: four lines were plotted but only three legend entries given, so the
-    # red outlier markers were labelled "mean" and the mean line "WM", while
-    # the WM line had no label. An explicit "outliers" entry is added.
-    ax1.legend()
-    # MATLAB: title([parameterName, ' average = ', num2str(round(average,2)), ...])
-    ax1.set_title(
-        f"{parameter_name} average = {_num2str(average)}, "
-        f"{parameter_name} WM = {_num2str(wm)}"
+    # MATLAB: [h0, p_normal] = kstest((x - WM)/APD);
+    # kstest ignores NaN and tests against N(0,1); h0 = 1 means "reject".
+    # Note: WM and APD come from the same data, so the p-value is optimistic
+    # (Lilliefors effect) - see README, "Kolmogorov-Smirnov test".
+    if scale_ok:
+        ks = stats.kstest((valid - wm) / scale, "norm")
+        ks_statistic, p_normal = float(ks.statistic), float(ks.pvalue)
+        h0 = float(p_normal < KS_ALPHA)
+    else:
+        ks_statistic = p_normal = h0 = np.nan  # no spread: test undefined
+
+    return ContinuousStats(
+        name=parameter_name, n=int(valid.size), missing=int(x.size - valid.size),
+        average=average, median=median, wm=wm, sigma=sigma, apd=apd,
+        scale=scale, scale_name=scale_name, band_low=band_low, band_high=band_high,
+        outliers=outliers, skewness=skewness, kurtosis=kurtosis,
+        ks_statistic=ks_statistic, p_normal=p_normal, h0=h0,
     )
 
-    # ---- Figure 2: histogram ------------------------------------------------
-    # MATLAB: figure; histogram(x, 'BinWidth',0.5); title(parameterName)
-    fig2, ax2 = plt.subplots()
-    _window_title(fig2, f"{parameter_name} - histogram")
-    ax2.hist(valid, bins=_bin_edges(valid, HISTOGRAM_BIN_WIDTH), edgecolor="black")
-    ax2.set_title(parameter_name)
 
-    # ---- Normality test -----------------------------------------------------
-    # MATLAB: [h0, p_normal] = kstest((x - WM)/APD);
-    # MATLAB kstest ignores NaN and tests against N(0,1) at alpha = 0.05;
-    # h0 = 1 means "reject normality".
-    # Note: WM and APD are estimated from the same data, so the p-value is
-    # optimistic (Lilliefors effect). This matches the original behaviour.
-    # For whole-number data such as "noise" the test is expected to reject
-    # normality: a staircase of a few values cannot match a smooth curve.
-    if scale_ok:
-        p_normal = float(stats.kstest((valid - wm) / scale, "norm").pvalue)
-        h0 = int(p_normal < 0.05)
-    else:
-        h0, p_normal = np.nan, np.nan  # no spread at all: test is undefined
-
-    # ---- Figure 3: empirical CDF vs. normal CDF ------------------------------
-    # MATLAB: figure; cdfplot(x); hold on
-    fig3, ax3 = plt.subplots()
-    _window_title(fig3, f"{parameter_name} - CDF")
-    sorted_x = np.sort(valid)
-    ecdf_y = np.arange(1, sorted_x.size + 1) / sorted_x.size
-    # Prepend (min, 0) so the staircase rises from 0 like MATLAB's cdfplot.
-    ax3.step(np.r_[sorted_x[0], sorted_x], np.r_[0.0, ecdf_y], where="post",
-             label="Empirical CDF")
-    ax3.grid(True)  # cdfplot turns the grid on
-    if scale_ok:
-        # MATLAB: x_values = linspace(min(x),max(x));   (100 points by default)
-        x_values = np.linspace(sorted_x[0], sorted_x[-1], 100)
-        # MATLAB: plot(x_values,normcdf((x_values-WM)/APD,0,1),'r-')
-        # FIX (label only): the curve is the normal CDF with mean WM and
-        # std APD, i.e. the standard normal applied to standardised data;
-        # the label now says so instead of "Standard Normal CDF".
-        ax3.plot(x_values, stats.norm.cdf((x_values - wm) / scale, 0, 1), "r-",
-                 label=f"Normal CDF (mean = WM, std = {scale_name})")
-    # MATLAB: legend(...,'Location','best'); title(parameterName)
-    ax3.legend(loc="best")
-    ax3.set_title(parameter_name)
-    ax3.set_xlabel("x")
-    ax3.set_ylabel("F(x)")
-
-    return average, median, wm, sigma, apd, h0, p_normal, outliers
+# --------------------------------------------------------------------------- #
+# Discrete parameters
+# --------------------------------------------------------------------------- #
+@dataclass
+class DiscreteStats:
+    name: str
+    n: int
+    missing: int
+    values: np.ndarray  # distinct values, ascending
+    counts: np.ndarray  # count of each value
+    mode: float  # most frequent value
+    mode_share: float  # fraction of samples equal to the mode
+    off_mode_share: float  # fraction of samples different from the mode
+    median: float
+    sigma: float
+    band: float  # outlier threshold: |x - mode| > band
+    outliers: np.ndarray  # boolean mask over all rows
+    rolling_window: int  # samples per window for the rolling mode share
+    rolling_mode_share: np.ndarray  # per row, NaN until the window is full
+    kind: str = field(default="discrete", init=False)
 
 
-def _window_title(fig, title):
-    """Name the figure window (15 windows are open when all parameters run)."""
-    manager = getattr(fig.canvas, "manager", None)
-    if manager is not None:
-        manager.set_window_title(title)
+def discrete_data(x, parameter_name):
+    """Discrete statistics for integer-valued data such as noise."""
+    x = np.asarray(x, dtype=float).ravel()
+    valid = _valid(x)
+    if valid.size == 0:
+        raise ValueError(f"Parameter '{parameter_name}' contains no numeric values.")
+
+    values, counts = np.unique(valid, return_counts=True)
+    # Mode: highest count; on a tie the value closest to the median wins.
+    median = float(np.median(valid))
+    top = values[counts == counts.max()]
+    mode = float(top[np.argmin(np.abs(top - median))])
+    mode_share = float(np.mean(valid == mode))
+    sigma = float(np.std(valid, ddof=1)) if valid.size > 1 else 0.0
+
+    # Outliers: more than 3 sigma from the mode, but never closer than one
+    # step (1 unit): a neighbour of the mode is ordinary measurement jitter.
+    band = max(OUTLIER_FACTOR * sigma, 1.0)
+    with np.errstate(invalid="ignore"):
+        outliers = np.abs(x - mode) > band
+
+    # Rolling share of the mode over the sample order (trailing window).
+    window = int(np.clip(round(valid.size / 10), 3, 20))
+    is_mode = np.where(np.isnan(x), np.nan, (x == mode).astype(float))
+    rolling = _rolling_mean(is_mode, window)
+
+    return DiscreteStats(
+        name=parameter_name, n=int(valid.size), missing=int(x.size - valid.size),
+        values=values, counts=counts, mode=mode, mode_share=mode_share,
+        off_mode_share=1.0 - mode_share, median=median, sigma=sigma, band=band,
+        outliers=outliers, rolling_window=window, rolling_mode_share=rolling,
+    )
 
 
-def _num2str(value):
-    """Mimic MATLAB num2str(round(value, 2)) - no trailing zeros."""
-    return f"{round(value, 2):g}"
+def analyse(x, parameter_name):
+    """Pick the discrete or continuous analysis automatically."""
+    if is_discrete(x):
+        return discrete_data(x, parameter_name)
+    return statistical_data(x, parameter_name)
 
 
-def _bin_edges(values, width):
-    """Bin edges aligned to multiples of ``width`` (like MATLAB 'BinWidth')."""
-    lo = np.floor(values.min() / width) * width
-    hi = np.ceil(values.max() / width) * width
-    if hi <= lo:
-        hi = lo + width
-    return np.arange(lo, hi + width / 2, width)
+# --------------------------------------------------------------------------- #
+# Helpers
+# --------------------------------------------------------------------------- #
+def _valid(x):
+    x = np.asarray(x, dtype=float).ravel()
+    return x[~np.isnan(x)]
+
+
+def _rolling_mean(values, window):
+    """Trailing mean over ``window`` rows, ignoring NaN; NaN until the window fills."""
+    out = np.full(values.shape, np.nan)
+    for i in range(window - 1, values.size):
+        chunk = values[i - window + 1:i + 1]
+        chunk = chunk[~np.isnan(chunk)]
+        if chunk.size:
+            out[i] = chunk.mean()
+    return out
