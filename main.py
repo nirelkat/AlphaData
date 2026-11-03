@@ -112,7 +112,7 @@ def main():
     parser.add_argument("--format", choices=["png", "pdf", "both"], default="pdf",
                         help="Format for --export (default: pdf, plus a combined report)")
     parser.add_argument("--no-show", action="store_true",
-                        help="Do not open the dashboard windows (use with --export)")
+                        help="Do not open the dashboard window (use with --export)")
     args = parser.parse_args()
 
     # MATLAB: clear; close all; clc
