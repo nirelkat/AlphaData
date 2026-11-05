@@ -1,5 +1,27 @@
 # AlphaData – parameter distribution analysis
 
+## Purpose
+
+This project aims to conduct an **exploratory data analysis on electronic product
+metrics** to understand their statistical distribution, evaluate whether they
+follow a normal distribution, and set clear acceptance thresholds for quality
+assurance.
+
+How the tool serves each of these three goals:
+
+| Goal | How it is addressed |
+|---|---|
+| **Understand each metric's distribution** | One dashboard page per metric: data in production order, histogram with a smoothed density curve, cumulative distribution and summary statistics. Robust statistics (WM, APD) describe the bulk of the data without being pulled by a few bad units |
+| **Evaluate normality** | The Kolmogorov–Smirnov test (`h0`, `p_normal`) together with the Q-Q plot, skewness and kurtosis. See [The Kolmogorov-Smirnov test explained](#the-kolmogorov-smirnov-test-explained) for what the test can and can't tell you |
+| **Set acceptance thresholds** | Data-driven limits per metric: **WM ± 3·APD** for continuous metrics and **mode ± max(3σ, 1)** for integer metrics such as `noise`. Units outside the limits are listed by serial number |
+
+The acceptance thresholds here are **statistical**. They describe what is normal
+for the population that was measured, not what the product specification allows.
+They are only as trustworthy as the normality assessment behind them (see
+[Why normality matters for the thresholds](#why-normality-matters-for-the-thresholds)).
+
+## What it does
+
 Reads an Excel sheet of product measurements (serial number + 5 parameters),
 analyses the distribution of every parameter and presents the results as
 dashboards: **one page per parameter** plus an **executive summary**. Each page
@@ -293,62 +315,18 @@ Both are **sensitive to outliers**. In the sample file, the single `clock` value
 
 ### Kolmogorov–Smirnov test: `h0` and `p_normal`
 
-The test answers one question: *could these values plausibly come from a normal
-distribution?*
+The KS test checks whether a continuous parameter is consistent with a normal
+distribution centred on WM with spread APD:
+- **D:** the largest vertical gap between the data's cumulative distribution and
+  the normal one.
+- **`p_normal`:** how often a truly normal sample would show a gap at least that
+  large.
+- **`h0`:** `1` when `p_normal < 0.05` (normality rejected), `0` otherwise
+  (not rejected).
 
-**Setup.** Each value is standardised with the robust centre and spread,
-zᵢ = (xᵢ − WM) / APD. The zᵢ are then compared with the standard normal
-distribution Φ:
-
-- H₀ (null hypothesis): the data comes from a normal distribution with mean WM and
-  standard deviation APD;
-- H₁: it doesn't.
-
-**Test statistic.** The empirical CDF Fₙ(z) is the fraction of samples ≤ z. The
-KS statistic Dₙ is the **largest vertical gap** between Fₙ and Φ:
-
-```math
-D_n = \sup_{z} \left| F_n(z) - \Phi(z) \right|
-    = \max_{i} \max\left( \frac{i}{n} - \Phi\left(z_{(i)}\right),\; \Phi\left(z_{(i)}\right) - \frac{i-1}{n} \right)
-```
-
-This is the gap visible in the *Empirical CDF vs. normal* plot. For example,
-D = 0.105 means the two curves are at most 10.5 percentage points apart.
-
-**p-value.** If H₀ is true, the distribution of Dₙ doesn't depend on which
-continuous distribution is tested. For large n, √n·Dₙ follows the Kolmogorov
-distribution:
-
-```math
-P\left(\sqrt{n}\, D_n \le t\right) \;\longrightarrow\; 1 - 2\sum_{k=1}^{\infty} (-1)^{k-1} e^{-2k^2 t^2}
-```
-
-`p_normal` is the probability of seeing a gap at least as large as the observed
-one if the data really were normal: p = P(Dₙ ≥ D_observed | H₀). SciPy's `kstest`
-computes this from the **exact** distribution of Dₙ for the actual n, so it is
-valid for small samples too. The formula above is the large-n limit, useful for
-intuition: at α = 0.05 the critical gap is about 1.36 / √n (≈ 0.18 for n = 60).
-
-**Decision (`h0`).** This follows MATLAB's `[h, p] = kstest(...)` at α = 0.05:
-
-| `h0` | Condition | Meaning |
-|---|---|---|
-| `1` | `p_normal < 0.05` | Normality **rejected**: the data deviates from normal more than chance explains |
-| `0` | `p_normal ≥ 0.05` | Normality **not rejected**: no evidence against normality |
-
-**Interpreting the result:**
-- **`h0 = 0` doesn't prove normality.** It means the test found no evidence
-  against it. With few samples (e.g. the 6-row reference file) the test can
-  rarely reject anything.
-- **With many samples, small deviations can reject normality** even when they
-  don't matter in practice. Always look at the Q-Q plot and histogram as well.
-- **The p-value is slightly optimistic.** WM and APD are estimated from the same
-  data being tested, so the normal curve is already fitted to it and Dₙ comes out
-  smaller than it would against a fixed distribution. The Lilliefors test corrects
-  for this; the original MATLAB method is kept here.
-- **The test assumes continuous data.** It isn't valid for integer data with many
-  ties, which would always "fail". That's why it's **not run for discrete
-  parameters** such as `noise`.
+It isn't run for discrete parameters such as `noise`. The full explanation, a
+worked example and the test's limitations are in
+[The Kolmogorov-Smirnov test explained](#the-kolmogorov-smirnov-test-explained).
 
 ### Discrete parameters
 
@@ -410,6 +388,267 @@ Each parameter is put on a common, unitless scale:
 
 On this scale every parameter is centred at 0 with comparable spread, and outliers
 of the continuous parameters lie beyond ±3.
+
+## The Kolmogorov-Smirnov test explained
+
+This section explains what the KS test (`kstest`) does step by step, how to read
+its two outputs `h0` and `p_normal`, and where it can mislead you.
+
+### 1. The question it answers
+
+*"If this metric really followed a normal distribution, would a sample like mine
+be unusual?"*
+
+The test never proves that data is normal. It can only find evidence that it
+**isn't**. Formally it weighs two hypotheses:
+
+| Hypothesis | Statement |
+|---|---|
+| H₀ (null) | The values come from a normal distribution with mean WM and standard deviation APD |
+| H₁ (alternative) | They come from some other distribution |
+
+### 2. Why it compares cumulative distributions, not histograms
+
+A histogram depends on the choice of bins: the same data can look normal with one
+bin width and lumpy with another. The **cumulative distribution function (CDF)**
+needs no such choice. For any value x it gives the fraction of values ≤ x, a curve
+that rises from 0 to 1.
+
+The KS test compares two CDFs:
+
+- **Empirical CDF Fₙ (the data):** a staircase. Sort the n values; the curve jumps
+  up by 1/n at each one. After the i-th smallest value it stands at i/n.
+- **Reference CDF Φ (the model):** the smooth S-shaped CDF of the normal
+  distribution. Each value is first standardised as zᵢ = (xᵢ − WM) / APD, so the
+  reference is the standard normal.
+
+If the data is normal, the staircase hugs the S-curve and the gaps between them
+are small. You can see both curves in the *Empirical CDF vs. normal* plot on every
+continuous page.
+
+### 3. The test statistic D: the largest gap
+
+```math
+D_n = \sup_{z} \left| F_n(z) - \Phi(z) \right|
+```
+
+D is the **largest vertical distance** between the two curves anywhere on the
+axis. It is a fraction: D = 0.105 means that at some value the data and the model
+disagree by 10.5 percentage points about how much of the population lies below it.
+
+The staircase only changes at the data points, and Φ only rises, so the largest
+gap must occur right at a step: just before it or just after it. That makes D
+easy to compute exactly. With the values sorted, z(1) ≤ … ≤ z(n):
+
+```math
+D^{+} = \max_{i} \left( \frac{i}{n} - \Phi\left(z_{(i)}\right) \right)
+\qquad
+D^{-} = \max_{i} \left( \Phi\left(z_{(i)}\right) - \frac{i-1}{n} \right)
+\qquad
+D_n = \max\left(D^{+},\, D^{-}\right)
+```
+
+- **D⁺:** the data has more values below a point than the model expects (the
+  staircase is **above** the curve).
+- **D⁻:** the data has fewer (the staircase is **below** the curve).
+
+### 4. Worked example: `clock` in `reference_data.xlsx`
+
+The six `clock` values have WM = 14.476 and APD = 0.727. Each value is
+standardised, and the staircase is compared with Φ just before and just after its
+step:
+
+| i | Serial | clock | z = (x − WM)/APD | Φ(z) | Staircase before step, (i−1)/n | Staircase after step, i/n | Gap after = i/n − Φ | Gap before = Φ − (i−1)/n |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 201 | 11.80 | −3.678 | 0.000 | 0.000 | 0.167 | 0.167 | 0.000 |
+| 2 | 144 | 12.30 | −2.991 | 0.001 | 0.167 | 0.333 | **0.332** | −0.165 |
+| 3 | 931 | 14.40 | −0.104 | 0.458 | 0.333 | 0.500 | 0.042 | 0.125 |
+| 4 | 450 | 14.60 | +0.170 | 0.568 | 0.500 | 0.667 | 0.099 | 0.068 |
+| 5 | 020 | 14.90 | +0.583 | 0.720 | 0.667 | 0.833 | 0.113 | 0.053 |
+| 6 | 256 | 15.01 | +0.734 | 0.769 | 0.833 | 1.000 | 0.231 | −0.065 |
+
+D⁺ = 0.332 (at serial 144) and D⁻ = 0.125, so **D = 0.332**.
+
+In words: 2 of the 6 units (33%) have a clock of 12.30 or less, but the fitted
+normal model expects only 0.1% of units that low. The question is whether a
+33-point disagreement is surprising for a sample of only six. Section 6 answers
+it.
+
+### 5. Why one yardstick works for every distribution
+
+D would be useless if its typical size depended on the distribution being tested.
+It doesn't, thanks to the **probability integral transform**: if X really follows
+a continuous distribution with CDF F, then F(X) is uniformly distributed between 0
+and 1. Under H₀, the values Φ(zᵢ) therefore behave like n uniform random numbers,
+whatever distribution was hypothesised.
+
+So the behaviour of D when H₀ is true depends **only on n**. That is why one table
+of critical values (or one formula) serves every KS test. The test is
+**distribution-free**.
+
+### 6. From D to a p-value
+
+**p-value.** `p_normal` answers: *if the data really were normal, how often would
+a sample of this size show a gap at least as large as the one observed?*
+
+```math
+p = P\left(D_n \ge D_{\text{observed}} \mid H_0\right)
+```
+
+**Exact computation.** SciPy computes this from the **exact** distribution of Dₙ
+for the actual n (the `kstwo` distribution), so it is valid for small samples too.
+
+**Large-n approximation.** For large n, √n·Dₙ follows the Kolmogorov
+distribution:
+
+```math
+P\left(\sqrt{n}\, D_n \le t\right) \;\longrightarrow\; 1 - 2\sum_{k=1}^{\infty} (-1)^{k-1} e^{-2k^2 t^2}
+```
+
+This gives the familiar rule of thumb: at α = 0.05 the critical gap is about
+1.36 / √n.
+
+**Critical values (exact).** H₀ is rejected at α = 0.05 when D exceeds:
+
+| n | 6 | 10 | 20 | 30 | 60 | 100 | 200 |
+|---|---|---|---|---|---|---|---|
+| Critical D | 0.519 | 0.409 | 0.294 | 0.242 | 0.172 | 0.134 | 0.095 |
+
+**Worked example, continued.** For the six `clock` values, D = 0.332 is well
+below the critical 0.519, and p = 0.428: about 43% of genuinely normal samples of
+six would show a gap this large. So `h0 = 0`, normality is not rejected.
+
+Note how much room small samples get. With six values, the curves may disagree by
+up to 52 percentage points before the test objects.
+
+### 7. The decision: `h0`
+
+| `h0` | Condition | Meaning |
+|---|---|---|
+| `1` | `p_normal < 0.05` | Normality **rejected**: a gap this large would be rare (under 5%) if the data were normal |
+| `0` | `p_normal ≥ 0.05` | Normality **not rejected**: the data is *compatible* with normal. That isn't proof that it is normal |
+
+This follows MATLAB's `[h, p] = kstest(...)`. α = 0.05 is the false-alarm rate you
+accept, and two kinds of mistake are possible:
+
+| | Data really normal | Data really not normal |
+|---|---|---|
+| `h0 = 1` (reject) | **False alarm** (type I error). Happens at most α = 5% of the time | Correct detection |
+| `h0 = 0` (don't reject) | Correct | **Missed departure** (type II error). Common with small n, see section 10 |
+
+The chance of correctly detecting a non-normal metric is called the test's
+**power**. It grows with sample size and with how far the data departs from normal.
+
+### 8. What the KS test is sensitive to, and what it misses
+
+**It looks hardest at the middle of the distribution.** The random wobble of the
+staircase is largest at the median and small in the tails. Its standard deviation
+at a point where the true CDF equals F is √(F(1−F)/n). For n = 60:
+
+| Position | Typical wobble of the staircase |
+|---|---|
+| Median (F = 0.5) | 0.065 |
+| 1% / 99% tail (F = 0.01 / 0.99) | 0.013 |
+
+D treats a 0.03 gap the same wherever it occurs. In the tails, a gap of 0.03 is
+already more than twice the normal wobble, a strong sign, yet it is far below the
+critical 0.172. **Tail problems such as too many extreme units are what KS detects
+worst**, and in quality assurance those are often what matters most.
+
+**A single outlier barely moves D.** One value can shift the staircase by at most
+1/n (0.017 for n = 60). The KS test is therefore no outlier detector; that is the
+job of the WM ± 3·APD band.
+
+### 9. How this program's setup affects the test
+
+- **The reference normal is fitted to the same data.** WM and APD are estimated
+  from the values being tested, so the model curve is already pulled toward the
+  data. D comes out smaller than it would against an independently known
+  distribution, and the p-values are **too large**, making the test conservative.
+  The textbook correction for this situation (estimated mean and σ) is the
+  **Lilliefors test**. The original MATLAB method is kept here.
+- **Robust centre and spread.** Using WM and APD instead of mean and σ keeps
+  outliers from distorting the model curve. Outliers then show up as large z
+  values (serials 201 and 144 above sit at z ≈ −3.7 and −3.0).
+- **APD = 0 fallback.** If APD is 0, σ is used instead (see
+  [When APD is 0](#when-apd-is-0-console-warning)).
+- **Not used for discrete data.** The test assumes continuous data. Integer
+  metrics such as `noise` have many tied values, so their staircase moves in a
+  few big jumps and the test would reject almost automatically. It is skipped
+  for them.
+
+### 10. How reliable is it here? (simulation)
+
+To measure the real behaviour, many random samples were generated with a known
+shape and rounded to 2 decimal places like the real data. Each was run through
+this program's KS test and three alternatives. The table shows how often each
+method **rejected normality** (seed 2, 800 samples per cell):
+
+| Data actually is … | n | This program (KS, WM/APD) | KS with mean/σ | Shapiro–Wilk | Anderson–Darling |
+|---|---|---|---|---|---|
+| Normal (should reject ≈ 5%) | 20 | 3% | 0% | 4% | 5% |
+| Heavy-tailed (t, 3 d.f.) | 20 | 3% | 3% | 34% | 32% |
+| Skewed (log-normal) | 20 | 5% | 4% | 68% | 61% |
+| Flat (uniform) | 20 | 7% | 0% | 19% | 16% |
+| Normal (should reject ≈ 5%) | 60 | 0% | 0% | 4% | 5% |
+| Heavy-tailed (t, 3 d.f.) | 60 | 1% | 12% | 71% | 67% |
+| Skewed (log-normal) | 60 | 17% | 32% | 99% | 99% |
+| Flat (uniform) | 60 | 3% | 0% | 85% | 69% |
+
+With 6 values (like `reference_data.xlsx`) this program rejected in under 1% of
+cases whatever the true shape.
+
+What this means:
+
+- **False alarms are rare.** When this program says "not normal" (`h0 = 1`), take
+  it seriously: the data is very likely not normal.
+- **Missed departures are common.** `h0 = 0` is **weak evidence**. Even with 60
+  units, clearly heavy-tailed or flat data passed more than 95% of the time.
+- **Better tools exist for the normality goal.** Shapiro–Wilk and Anderson–Darling
+  keep the false-alarm rate near 5% while detecting real departures far more often.
+  Anderson–Darling in particular weights the tails more heavily, where QA
+  thresholds live.
+
+The simulation can be reproduced with SciPy (`scipy.stats.shapiro`,
+`scipy.stats.anderson`) and `statistical_data.statistical_data`.
+
+### 11. Reading the result together with the plots
+
+| KS result | Q-Q plot / histogram | Conclusion |
+|---|---|---|
+| `h0 = 1` | Clear curve or skew | Not normal. Treat the 3·APD thresholds with care |
+| `h0 = 1` | Looks straight, large n | Possibly a small deviation that a large sample can detect; judge whether it matters in practice |
+| `h0 = 0` | Straight line, symmetric histogram, skewness and kurtosis near 0 | Consistent with normal |
+| `h0 = 0` | Curved ends, long tail, or skewness/kurtosis far from 0 | Probably **not** normal; the test lacked power (section 10) |
+| `h0 = 0` | Few samples (under ~20) | Inconclusive; collect more data |
+
+### 12. Other assumptions to keep in mind
+
+- **Independent, identically distributed samples.** The test assumes every unit
+  comes from the same, unchanging process. A drift over production order (visible
+  in the *Data vs. sample* plot) breaks this. A mixture of two batches can look
+  "not normal" even when each batch is normal.
+- **Several tests at once.** Four continuous metrics are tested, each with a 5%
+  false-alarm risk. Even if all four are perfectly normal, the chance that at least
+  one gets `h0 = 1` by luck is 1 − 0.95⁴ ≈ 18.5% (less in practice here, because
+  this setup is conservative).
+- **Sample size.** With very few units the test can hardly reject anything. With
+  very many it flags deviations too small to matter.
+
+### Why normality matters for the thresholds
+
+The acceptance band WM ± 3·APD is meaningful because, **for normal data**, it
+contains 99.73% of units. That means about 0.16 good units flagged per 60 measured,
+essentially none.
+
+If a metric is not normal, that promise breaks:
+- **Heavy tails:** more good units fall outside the band (false rejects), or the
+  band ends up too wide to catch real defects.
+- **Skew:** the band is too tight on one side and too loose on the other.
+
+This is why the normality assessment comes before trusting the thresholds, and
+why, given section 10, the Q-Q plot and skewness/kurtosis should always be read
+alongside `h0`.
 
 ## Sample data generator
 
